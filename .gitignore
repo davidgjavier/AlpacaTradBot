@@ -1,0 +1,11 @@
+.env
+.DS_Store
+*.log
+*.db
+*.db-shm
+*.db-wal
+bot_activity.json
+bot_control.json
+crypto_bot_activity.json
+crypto_position_state.json
+strategy_state.json
