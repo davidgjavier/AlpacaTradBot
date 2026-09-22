@@ -97,11 +97,7 @@ from alpaca.trading.requests import (
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.historical.crypto import CryptoHistoricalDataClient
-from alpaca.data.requests import (
-    StockBarsRequest, StockLatestQuoteRequest, CryptoBarsRequest,
-    CryptoLatestQuoteRequest, Sort,
-)
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, Sort
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 import strategies
@@ -109,7 +105,6 @@ import db
 
 # ---------- Configuration ----------
 TICKERS = ["NVDA", "INTC", "NOK"]
-CRYPTO_SYMBOL = "BTC/USD"
 SHORT_WINDOW = 9
 LONG_WINDOW = 21
 POSITION_SIZE_USD = 500
@@ -128,7 +123,6 @@ if not API_KEY or not SECRET_KEY:
 
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=PAPER)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-crypto_data_client = CryptoHistoricalDataClient()
 
 
 def log(symbol, message):
@@ -191,67 +185,16 @@ def get_macro_closes(symbol, limit=250):
     return [float(b.close) for b in bars]
 
 
-def get_crypto_telemetry_bars(limit=50):
-    request = CryptoBarsRequest(
-        symbol_or_symbols=CRYPTO_SYMBOL,
-        timeframe=TimeFrame(5, TimeFrameUnit.Minute),
-        start=datetime.now(ZoneInfo("UTC")) - timedelta(days=3),
-        limit=limit + 1,
-        sort=Sort.DESC,
-    )
-    bars = list(reversed(list(crypto_data_client.get_crypto_bars(request)[CRYPTO_SYMBOL])))
-    bars = _drop_unclosed_bar(bars, timeframe_minutes=5)[-limit:]
-    return (
-        [float(bar.high) for bar in bars],
-        [float(bar.low) for bar in bars],
-        [float(bar.close) for bar in bars],
-        [float(bar.volume) for bar in bars],
-    )
-
-
-def get_crypto_telemetry_macro(limit=250):
-    request = CryptoBarsRequest(
-        symbol_or_symbols=CRYPTO_SYMBOL,
-        timeframe=TimeFrame(1, TimeFrameUnit.Hour),
-        start=datetime.now(ZoneInfo("UTC")) - timedelta(days=20),
-        limit=limit + 1,
-        sort=Sort.DESC,
-    )
-    bars = list(reversed(list(crypto_data_client.get_crypto_bars(request)[CRYPTO_SYMBOL])))
-    bars = _drop_unclosed_bar(bars, timeframe_minutes=60)[-limit:]
-    return [float(bar.close) for bar in bars]
-
-
-def get_crypto_telemetry_quote():
-    try:
-        quote = crypto_data_client.get_crypto_latest_quote(
-            CryptoLatestQuoteRequest(symbol_or_symbols=CRYPTO_SYMBOL)
-        )[CRYPTO_SYMBOL]
-        bid, ask = float(quote.bid_price), float(quote.ask_price)
-        if bid <= 0 or ask <= 0:
-            return None
-        return bid, ask
-    except Exception:
-        return None
-
 
 def print_cycle_telemetry(market_open):
     headers = ("SYMBOL", "PRICE", "1H EMA200", "5M EMA9/21", "RVOL / SPREAD", "DECISION")
     rows = []
-    for symbol in TICKERS + [CRYPTO_SYMBOL]:
+    for symbol in TICKERS:
         try:
-            if symbol == CRYPTO_SYMBOL:
-                highs, lows, closes, volumes = get_crypto_telemetry_bars()
-                macro_closes = get_crypto_telemetry_macro()
-                quote = get_crypto_telemetry_quote()
-                spread_ok = bool(quote and (quote[1] - quote[0]) / ((quote[1] + quote[0]) / 2) <= strategies.CRYPTO_SPREAD_CAP_PCT)
-                market_status = True
-            else:
-                highs, lows, closes, volumes = get_bars(symbol)
-                macro_closes = get_macro_closes(symbol)
-                quote = get_live_quote(symbol)
-                spread_ok = bool(quote and quote[1] - quote[0] <= strategies.max_equity_spread_dollars(symbol))
-                market_status = market_open
+            highs, lows, closes, volumes = get_bars(symbol)
+            macro_closes = get_macro_closes(symbol)
+            quote = get_live_quote(symbol)
+            spread_ok = bool(quote and quote[1] - quote[0] <= strategies.max_equity_spread_dollars(symbol))
             if len(closes) < LONG_WINDOW:
                 raise ValueError("not enough 5m bars")
             price = closes[-1]
@@ -263,7 +206,7 @@ def print_cycle_telemetry(market_open):
             rvol_text = "PASS" if rvol else "FAIL"
             spread_text = "PASS" if spread_ok else "FAIL"
             signal = check_crossover(closes)
-            if not market_status:
+            if not market_open:
                 decision = "MARKET CLOSED"
             elif signal:
                 decision = f"{signal.upper()} SIGNAL"
@@ -274,7 +217,7 @@ def print_cycle_telemetry(market_open):
             rows.append((symbol, "N/A", "N/A/FAIL", "N/A", "FAIL/FAIL", f"DATA ERROR: {type(error).__name__}"))
     widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) for index in range(len(headers))]
     border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-    print("\n5-MINUTE CYCLE TELEMETRY", flush=True)
+    print("\n5-MINUTE EQUITY CYCLE TELEMETRY", flush=True)
     print(border, flush=True)
     print("| " + " | ".join(headers[index].ljust(widths[index]) for index in range(len(headers))) + " |", flush=True)
     print(border, flush=True)
