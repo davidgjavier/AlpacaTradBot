@@ -1,0 +1,252 @@
+test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown (test_paper_harness_hardening.H1_ReturnedOrderIdentity) ... test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) ... test_boolean_position_is_invalid (test_paper_harness_hardening.H3_BooleanPosition) ... FAIL
+test_replay_under_different_run_account_or_symbol_is_refused (test_paper_harness_hardening.H4_JournalBinding) ... ERROR
+test_restart_keeps_the_original_deadline (test_paper_harness_hardening.H4_JournalBinding) ... ERROR
+test_single_writer (test_paper_harness_hardening.H4_JournalBinding) ... ERROR
+test_sell_sized_from_a_pre_fill_read_is_refused_until_re_read (test_paper_harness_hardening.H5_StalePositionAfterFills) ... ERROR
+test_cleanup_after_the_allowance_is_refused_and_unresolved (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... ERROR
+test_cleanup_has_a_bounded_allowance_after_the_test_deadline (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... ERROR
+test_journal_write_failure_refuses_without_submitting_or_phantom_state (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... ERROR
+test_buy_after_failed_position_read_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission) ... FAIL
+test_buy_with_unknown_position_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission) ... FAIL
+test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) ... test_direct_call_after_test_deadline_is_refused (test_paper_harness_hardening.R3_DeadlineAtSubmissionBoundary) ... FAIL
+
+======================================================================
+ERROR: test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown (test_paper_harness_hardening.H1_ReturnedOrderIdentity) [client_order_id]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 95, in test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown (test_paper_harness_hardening.H1_ReturnedOrderIdentity) [symbol]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 95, in test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown (test_paper_harness_hardening.H1_ReturnedOrderIdentity) [side]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 95, in test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad=nan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad=inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad=-0.0001)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad='abc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) (bad=0.0005)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 112, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_replay_under_different_run_account_or_symbol_is_refused (test_paper_harness_hardening.H4_JournalBinding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 136, in test_replay_under_different_run_account_or_symbol_is_refused
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_restart_keeps_the_original_deadline (test_paper_harness_hardening.H4_JournalBinding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 151, in test_restart_keeps_the_original_deadline
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_single_writer (test_paper_harness_hardening.H4_JournalBinding)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 162, in test_single_writer
+    Harness(f, j, run_id="t", account_key="paper:test-account")
+TypeError: __init__() got an unexpected keyword argument 'account_key'
+
+======================================================================
+ERROR: test_sell_sized_from_a_pre_fill_read_is_refused_until_re_read (test_paper_harness_hardening.H5_StalePositionAfterFills)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 171, in test_sell_sized_from_a_pre_fill_read_is_refused_until_re_read
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_cleanup_after_the_allowance_is_refused_and_unresolved (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 195, in test_cleanup_after_the_allowance_is_refused_and_unresolved
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_cleanup_has_a_bounded_allowance_after_the_test_deadline (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 184, in test_cleanup_has_a_bounded_allowance_after_the_test_deadline
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+ERROR: test_journal_write_failure_refuses_without_submitting_or_phantom_state (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 205, in test_journal_write_failure_refuses_without_submitting_or_phantom_state
+    h.refresh()
+AttributeError: 'Harness' object has no attribute 'refresh'
+
+======================================================================
+FAIL: test_boolean_position_is_invalid (test_paper_harness_hardening.H3_BooleanPosition)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 128, in test_boolean_position_is_invalid
+    self.assertIsNone(h.position)
+AssertionError: 1.0 is not None
+
+======================================================================
+FAIL: test_buy_after_failed_position_read_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 56, in test_buy_after_failed_position_read_is_refused
+    refused_without_submission(self, f, lambda: h.buy(0.0001, PX, otype="market"))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_buy_with_unknown_position_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 49, in test_buy_with_unknown_position_is_refused
+    refused_without_submission(self, f, lambda: h.buy(0.0001, PX, otype="market"))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [nan price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [zero price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [negative price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [bool price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [nan limit]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [bool limit]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) [negative limit]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 76, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    refused_without_submission(self, f, lambda: call(h))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+======================================================================
+FAIL: test_direct_call_after_test_deadline_is_refused (test_paper_harness_hardening.R3_DeadlineAtSubmissionBoundary)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 86, in test_direct_call_after_test_deadline_is_refused
+    refused_without_submission(self, f, lambda: h.buy(0.0001, PX, otype="market"))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 40, in refused_without_submission
+    fn()
+AssertionError: LocalRefusal not raised
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.013s
+
+FAILED (failures=11, errors=16)

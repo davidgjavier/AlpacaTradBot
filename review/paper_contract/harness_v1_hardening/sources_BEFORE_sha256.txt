@@ -1,0 +1,2 @@
+08a3668dd804dc2abd4bde4fbdcda2d3dd9a04757755073438d73f106d72362e  review/paper_contract/harness_v1/paper_harness.py
+c4c872d148ccdd6b044ea22bd21b7b5231bc50689b7bd6c21dc0a5eaa6f6bee8  review/paper_contract/harness_v1/test_paper_harness.py
