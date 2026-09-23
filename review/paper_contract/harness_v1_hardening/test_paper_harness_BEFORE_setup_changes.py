@@ -80,7 +80,7 @@ class N0_Hygiene(unittest.TestCase):
 
     def test_no_default_transport(self):
         with self.assertRaises(ValueError):
-            Harness(None, os.path.join(tempfile.mkdtemp(), "j"), run_id="x", account_key="paper:test-account")
+            Harness(None, os.path.join(tempfile.mkdtemp(), "j"), run_id="x")
 
     def test_source_has_no_bot_credential_or_network_imports(self):
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_harness.py")) as fh:
@@ -99,10 +99,9 @@ class N1_UnknownOrders(unittest.TestCase):
         f = Fake()
         h, _ = harness(f)
         f.lose_next = True
-        h.refresh()                                                 # v1.1 setup: fresh position
         cid = h.buy(0.0002, PX, otype="market")                   # accepted + filled at the broker, response lost
         f.lookup_fails = True                                     # ...and not findable: genuinely UNKNOWN
-        rep = h.run([lambda hh: (hh.refresh(), hh.buy(0.0001, PX, otype="market"))], PX)
+        rep = h.run([lambda hh: hh.buy(0.0001, PX, otype="market")], PX)
         self.assertEqual(len(f.submits), 1, "another order was submitted while one was unknown")
         self.assertEqual(f.market_sells(), [], "cleanup sold while an order was unknown")
         self.assertEqual(rep["status"], "UNRESOLVED")
@@ -114,7 +113,6 @@ class N1_UnknownOrders(unittest.TestCase):
         f = Fake()
         h, _ = harness(f)
         f.lose_next = True
-        h.refresh()                                                 # v1.1 setup: fresh position
         cid = h.buy(0.0002, PX, otype="market")
         self.assertIn(cid, h.unresolved())
         rep = h.cleanup(PX)
@@ -125,10 +123,8 @@ class N1_UnknownOrders(unittest.TestCase):
     def test_unknown_cancellation_blocks_cleanup_sell(self):
         f = Fake(position=0.0)
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0002, PX, otype="market")                         # owned inventory 0.0002
         h.read_position()
-        h.refresh()                                                 # v1.1 setup: fresh position
         rest = h.buy(0.0001, PX, otype="limit", limit=50_000.0)    # resting far-below limit buy
         f.cancel_raises = True
         rep = h.cleanup(PX)
@@ -140,7 +136,6 @@ class N1_UnknownOrders(unittest.TestCase):
         f = Fake()
         h, _ = harness(f)
         f.lose_next = True
-        h.refresh()                                                 # v1.1 setup: fresh position
         cid = h.buy(0.0001, PX, otype="limit", limit=50_000.0)
         del f.orders[cid]                                         # broker not (yet) showing it
         h.reconcile()
@@ -149,7 +144,6 @@ class N1_UnknownOrders(unittest.TestCase):
     def test_cleanup_never_submits_a_second_sell_while_the_first_is_unknown(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0002, PX, otype="market")
         h.reconcile()
         h.read_position()
@@ -172,7 +166,6 @@ class N2_LateFillsAndReads(unittest.TestCase):
     def test_late_fill_after_terminal_is_an_anomaly_and_stops(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         cid = h.buy(0.0001, PX, otype="limit", limit=50_000.0)
         h.cancel(cid)
         self.assertEqual(h.orders[cid]["state"], "TERMINAL")
@@ -180,14 +173,13 @@ class N2_LateFillsAndReads(unittest.TestCase):
         h.orders[cid]["recheck"] = True
         h.reconcile()
         self.assertTrue(h.anomalies)
-        rep = h.run([lambda hh: (hh.refresh(), hh.buy(0.0001, PX, otype="market"))], PX)
+        rep = h.run([lambda hh: hh.buy(0.0001, PX, otype="market")], PX)
         self.assertEqual(len(f.submits), 1)
         self.assertEqual(rep["status"], "UNRESOLVED")
 
     def test_failed_position_read_blocks_cleanup_sell(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0002, PX, otype="market")
         f.position_fails = True
         rep = h.cleanup(PX)
@@ -201,7 +193,6 @@ class N2_LateFillsAndReads(unittest.TestCase):
         h, _ = harness(f)
 
         def step(hh):
-            hh.refresh()  # v1.1 setup
             cid = hh.buy(0.0001, PX, otype="limit", limit=50_000.0)
             if hh.orders[cid]["filled"] > 0:
                 raise StopCondition("unexpected fill")
@@ -217,7 +208,6 @@ class N3_DuplicatesAndRestart(unittest.TestCase):
     def test_duplicate_callbacks_do_not_double_count(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         cid = h.buy(0.0002, PX, otype="market")
         for _ in range(3):
             h._apply(cid, f.get_order_by_client_id(cid))
@@ -226,13 +216,10 @@ class N3_DuplicatesAndRestart(unittest.TestCase):
     def test_restart_rebuilds_state_keeps_budget_and_refuses_new_orders_while_unresolved(self):
         f = Fake()
         h, j = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="market")
         f.lose_next = True
-        h.refresh()                                                 # v1.1 setup: fresh position
         lost = h.buy(0.0001, PX, otype="market")
-        h.close()                                                # v1.1 setup: release single-writer lock
-        h2 = Harness(f, j, run_id="t", account_key="paper:test-account")   # new process, same journal
+        h2 = Harness(f, j, run_id="t")                          # new process, same journal
         self.assertEqual(h2.attempts, 2)
         self.assertIn(lost, h2.unresolved())
         with self.assertRaises(LocalRefusal):
@@ -249,7 +236,6 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
         for q in (1.0, float("nan"), -0.1, True, 0.0):
             with self.subTest(qty=q):
                 with self.assertRaises(LocalRefusal):
-                    h.refresh()                                                 # v1.1 setup: fresh position
                     h.buy(q, PX, otype="market")
         self.assertEqual(f.submits, [])
 
@@ -257,24 +243,19 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
         f = Fake()
         h, _ = harness(f)
         for _ in range(4):
-            h.refresh()                                                 # v1.1 setup: fresh position
             h.buy(0.00024, PX, otype="market")                   # 4 x $24 = $96
         with self.assertRaises(LocalRefusal):
-            h.refresh()                                                 # v1.1 setup: fresh position
             h.buy(0.00024, PX, otype="market")                   # would exceed $100
         self.assertEqual(len(f.submits), 4)
 
     def test_sell_capped_by_confirmed_unreserved_inventory(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0002, PX, otype="market")
         h.reconcile()
         h.read_position()
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.sell(0.00015, PX, otype="limit", limit=150_000.0)      # $22.50; rests; reserves 0.00015
         with self.assertRaises(LocalRefusal):
-            h.refresh()                                                 # v1.1 setup: fresh position
             h.sell(0.0001, PX, otype="limit", limit=150_000.0)   # $15, but only 0.00005 unreserved
         q, why = h.p6_partial_probe_qty(1.0, PX, min_qty=0.0001)
         self.assertIsNone(q)
@@ -285,17 +266,12 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
         f = Fake()
         h, _ = harness(f, max_orders=6, cleanup_reserve=2)
         f.reject_next = True
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="limit", limit=50_000.0)          # counted (rejected)
         f.orders["pt-t-2"] = {"id": "x", "client_order_id": "pt-t-2", "status": "new", "filled_qty": 0.0}
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="limit", limit=50_000.0)          # counted (duplicate client id -> rejected)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="limit", limit=50_000.0)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="limit", limit=50_000.0)
         with self.assertRaises(LocalRefusal):
-            h.refresh()                                                 # v1.1 setup: fresh position
             h.buy(0.0001, PX, otype="limit", limit=50_000.0)      # 4 used; 2 reserved for cleanup
         self.assertEqual(h.attempts, 4)
         self.assertEqual(len(f.submits), 4)
@@ -303,9 +279,7 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
     def test_exhausted_cleanup_budget_reports_residual_exposure(self):
         f = Fake()
         h, _ = harness(f, max_orders=3, cleanup_reserve=1)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="market")
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="market")
         f.market_fill_fraction = 0.5
         h.reconcile()
@@ -322,7 +296,6 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
         h, _ = harness(f)
 
         def step(hh):
-            hh.refresh()  # v1.1 setup
             hh.buy(0.0001, PX, otype="market")
             raise KeyboardInterrupt
         rep = h.run([step], PX)
@@ -340,15 +313,13 @@ class N4_BudgetLimitsInterrupt(unittest.TestCase):
         h.cleanup = interrupted_cleanup
 
         def step(hh):
-            hh.refresh()  # v1.1 setup
             hh.buy(0.0001, PX, otype="market")
             raise KeyboardInterrupt
         rep = h.run([step], PX)
         self.assertTrue(rep["forced"])
         self.assertEqual(rep["status"], "UNRESOLVED")
         self.assertTrue(os.path.getsize(j) > 0)
-        h.close()                                                # v1.1 setup: release single-writer lock
-        h2 = Harness(f, j, run_id="t", account_key="paper:test-account")
+        h2 = Harness(f, j, run_id="t")
         self.assertEqual(h2.attempts, 1)
 
 
@@ -375,9 +346,7 @@ class D1_PlanV1CleanupRuleDefect(unittest.TestCase):
     def test_v1_rule_sells_while_a_cancellation_is_unknown(self):
         f = Fake()
         h, _ = harness(f)
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0002, PX, otype="market")
-        h.refresh()                                                 # v1.1 setup: fresh position
         h.buy(0.0001, PX, otype="limit", limit=50_000.0)          # resting
         f.cancel_raises = True
         self.v1_cleanup(f)

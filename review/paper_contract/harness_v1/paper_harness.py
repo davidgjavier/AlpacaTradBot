@@ -1,19 +1,28 @@
-"""OFFLINE paper-contract harness (v1). NOT connected to any broker. There is deliberately NO default transport:
-a caller must inject one. This module imports no bot code, reads no credentials and no environment.
+"""OFFLINE paper-contract harness v1.1. NOT connected to any broker; there is deliberately NO default transport.
+Imports no bot code, reads no credentials and no environment.
 
-Invariant (same as the bot's R1 Option-1 candidate): while ANY tracked order has an unknown outcome, a cancellation
-is unconfirmed, or the position is unreadable, the harness submits NOTHING, including cleanup. It stops UNRESOLVED
-and reports residual exposure and unresolved client ids for human reconciliation. It never resubmits blindly.
+IMPLEMENTED GUARDS (tested offline with a fake transport):
+- Invariant: while ANY tracked order is unknown, a cancellation is unconfirmed, the position is unknown OR STALE
+  (any submission or observed fill since the last confirmed read), or an anomaly exists, NOTHING is submitted,
+  cleanup included. The harness stops UNRESOLVED and reports residual exposure for human reconciliation.
+- Numbers: qty, price reference, limit and notional must be finite, positive, non-boolean. Positions must be finite,
+  >= 0, non-boolean.
+- Returned orders must match the expected client_order_id, symbol and side; cumulative filled_qty must be finite,
+  0 <= filled <= qty, and monotonic. Violations are anomalies; state is never zeroed, inferred or retried.
+- Deadlines are enforced AT THE SUBMISSION BOUNDARY from the wall-clock start recorded in the journal header (a
+  restart does not reset it). Test steps end at start+max_wall_s; cleanup has a separate bounded allowance
+  (cleanup_allowance_s) after that, then refuses and reports UNRESOLVED.
+- Budget: every submission ATTEMPT counts; cleanup_reserve orders are reserved for cleanup inside max_orders.
+- Journal: header binds run_id/account_key/symbol; a mismatching replay is refused. A single-writer lock (flock) is
+  held for the harness lifetime. The attempt record is written and fsynced BEFORE the transport call; if that
+  write fails, the submission is refused with no in-memory state change (journaling is NOT behavior-neutral: a
+  persistence failure blocks trading).
 
-Budget: every submission ATTEMPT counts (accepted, rejected, duplicate, lost response). Cleanup capacity is reserved
-inside the total order cap, so test steps cannot consume it. Sells are capped by confirmed owned AND unreserved
-inventory, never by intent. Nothing here manufactures exposure to force a behavior (P6 returns INCONCLUSIVE).
-
-Termination: a graceful KeyboardInterrupt stops test steps and runs cleanup under the same invariant. A second
-interrupt during cleanup is recorded as FORCED; tracked orders may remain; the journal (written and fsynced before
-every submission) lets a restarted harness rebuild state and refuse new orders until reconciled. A SIGKILL cannot be
-handled in-process; the journal is the only recovery path.
+NOT IMPLEMENTED HERE (future broker-adapter requirements; see ADAPTER_REQUIREMENTS.md): verifying account_key
+against the broker account, request timeouts, the guarantee that submissions are never retried by the HTTP layer,
+and anything about remote execution. A local timeout NEVER cancels remote execution.
 """
+import fcntl
 import json
 import math
 import os
@@ -30,29 +39,66 @@ class Rejected(Exception):
 
 
 class LocalRefusal(Exception):
-    """The harness refused BEFORE any transport call (limits/invariant)."""
+    """The harness refused BEFORE any transport call."""
 
 
 class StopCondition(Exception):
     pass
 
 
+def _pos_num(v):
+    """Finite, > 0, non-boolean real number, else None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        return None
+    return float(v)
+
+
+def _sym(s):
+    return str(s or "").replace("/", "").upper()
+
+
 class Harness:
-    def __init__(self, transport, journal_path, run_id, symbol="BTC/USD", max_orders=20, cleanup_reserve=4,
-                 max_order_notional=25.0, max_total_buy_notional=100.0, max_wall_s=1800.0, clock=time.monotonic):
+    def __init__(self, transport, journal_path, run_id, account_key, symbol="BTC/USD", max_orders=20,
+                 cleanup_reserve=4, max_order_notional=25.0, max_total_buy_notional=100.0, max_wall_s=1800.0,
+                 cleanup_allowance_s=300.0, clock=time.monotonic, wall=time.time):
         if transport is None:
             raise ValueError("a transport must be injected; there is no default broker adapter")
+        if not isinstance(account_key, str) or not account_key.strip():
+            raise ValueError("account_key required (the broker adapter must verify it before any call)")
         if cleanup_reserve < 1 or cleanup_reserve >= max_orders:
             raise ValueError("cleanup_reserve must be >= 1 and < max_orders")
-        self.t, self.path, self.run_id, self.symbol = transport, journal_path, run_id, symbol
+        for name, v in (("max_wall_s", max_wall_s), ("cleanup_allowance_s", cleanup_allowance_s)):
+            if _pos_num(v) is None:
+                raise ValueError(f"{name} must be a finite positive number")
+        self.t, self.path, self.run_id, self.account_key, self.symbol = transport, journal_path, run_id, account_key, symbol
         self.max_orders, self.reserve = max_orders, cleanup_reserve
         self.max_order_notional, self.max_buy_total = max_order_notional, max_total_buy_notional
-        self.max_wall_s, self.clock, self.t0 = max_wall_s, clock, clock()
-        self.orders, self.attempts, self.buy_notional, self.position = {}, 0, 0.0, None
-        self.anomalies, self.status, self.forced = [], "RUNNING", False
-        self.local_refusals = []
-        if os.path.exists(journal_path):
-            self._replay()
+        self.max_wall_s, self.cleanup_allowance_s, self.clock, self.wall = max_wall_s, cleanup_allowance_s, clock, wall
+        self.t0 = clock()
+        self.orders, self.attempts, self.buy_notional = {}, 0, 0.0
+        self.position, self.position_stale = None, True
+        self.anomalies, self.status, self.forced, self.local_refusals = [], "RUNNING", False, []
+        self._lock = open(journal_path + ".lock", "a")
+        try:
+            fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self._lock.close()
+            raise ValueError("journal is owned by another writer (single-writer lock held)")
+        try:
+            if os.path.exists(journal_path) and os.path.getsize(journal_path) > 0:
+                self._replay()
+            else:
+                self.start_wall = wall()
+                self._j("header", run_id=run_id, account_key=account_key, symbol=symbol, start_wall=self.start_wall,
+                        max_wall_s=max_wall_s, cleanup_allowance_s=cleanup_allowance_s)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        if getattr(self, "_lock", None) and not self._lock.closed:
+            fcntl.flock(self._lock.fileno(), fcntl.LOCK_UN)
+            self._lock.close()
 
     # ------------------------------------------------------------------ journal
     def _j(self, kind, **body):
@@ -64,20 +110,27 @@ class Harness:
 
     def _replay(self):
         with open(self.path) as f:
-            for line in f:
-                r = json.loads(line)
-                k = r["kind"]
-                if k == "attempt":
-                    self.attempts += 1
-                    self.orders[r["cid"]] = {"cid": r["cid"], "side": r["side"], "qty": r["qty"], "type": r["type"],
-                                             "limit": r.get("limit"), "state": "UNKNOWN", "filled": 0.0,
-                                             "order_id": None, "purpose": r["purpose"]}
-                    if r["side"] == "buy":
-                        self.buy_notional += r["notional"]
-                elif k == "order_state" and r["cid"] in self.orders:
-                    self.orders[r["cid"]].update(state=r["state"], filled=r["filled"], order_id=r.get("order_id"))
-                elif k == "anomaly":
-                    self.anomalies.append(r["what"])
+            recs = [json.loads(line) for line in f if line.strip()]
+        hdr = recs[0] if recs else {}
+        if hdr.get("kind") != "header":
+            raise ValueError("journal has no header; refusing to replay")
+        for k, want in (("run_id", self.run_id), ("account_key", self.account_key), ("symbol", self.symbol)):
+            if hdr.get(k) != want:
+                raise ValueError(f"journal {k} {hdr.get(k)!r} != {want!r}; refusing to replay")
+        self.start_wall = hdr["start_wall"]                      # the deadline survives restarts
+        for r in recs[1:]:
+            k = r["kind"]
+            if k == "attempt":
+                self.attempts += 1
+                self.orders[r["cid"]] = {"cid": r["cid"], "side": r["side"], "qty": r["qty"], "type": r["type"],
+                                         "limit": r.get("limit"), "state": "UNKNOWN", "filled": 0.0,
+                                         "order_id": None, "purpose": r["purpose"]}
+                if r["side"] == "buy":
+                    self.buy_notional += r["notional"]
+            elif k == "order_state" and r["cid"] in self.orders:
+                self.orders[r["cid"]].update(state=r["state"], filled=r["filled"], order_id=r.get("order_id"))
+            elif k == "anomaly":
+                self.anomalies.append(r["what"])
         self._j("restart", unresolved=self.unresolved())
 
     # ------------------------------------------------------------------ state
@@ -90,9 +143,12 @@ class Harness:
     def reserved(self):
         return sum(max(0.0, o["qty"] - o["filled"]) for o in self.open_orders() if o["side"] == "sell")
 
+    def position_confirmed(self):
+        return self.position is not None and not self.position_stale
+
     def available(self):
-        """Confirmed owned minus reserved by our open sells; None if anything is unknown."""
-        if self.position is None or self.unresolved():
+        """Confirmed FRESH owned minus reserved by our open sells; None if anything is unknown or stale."""
+        if not self.position_confirmed() or self.unresolved():
             return None
         return max(0.0, self.position - self.reserved())
 
@@ -104,40 +160,67 @@ class Harness:
             why.append(f"anomalies {self.anomalies}")
         return why
 
+    def _anomaly(self, what):
+        self.anomalies.append(what)
+        self._j("anomaly", what=what)
+
     # ------------------------------------------------------------------ broker interactions
     def read_position(self):
         try:
             q = self.t.get_position(self.symbol)
+            if isinstance(q, bool):
+                raise ValueError("boolean position")
             q = float(q)
             if not math.isfinite(q) or q < 0:
                 raise ValueError(f"invalid position {q!r}")
-            self.position = q
         except Exception as e:
-            self.position = None
+            self.position, self.position_stale = None, True
             self._j("position_unknown", error=f"{type(e).__name__}: {e}")
-        else:
-            self._j("position", qty=self.position)
-        return self.position
+            return None
+        self.position, self.position_stale = q, False
+        self._j("position", qty=q)
+        return q
+
+    def refresh(self):
+        self.reconcile()
+        return self.read_position()
 
     def _apply(self, cid, o):
-        """Idempotent: cumulative filled_qty; duplicate callbacks are harmless. Growth after terminal = anomaly."""
+        """Validated, idempotent update from a broker order. Identity and fill violations are anomalies and leave
+        the tracked state UNCHANGED (never zeroed, never inferred)."""
         rec = self.orders[cid]
-        status, filled = str(o.get("status")), float(o.get("filled_qty") or 0.0)
-        was_terminal = rec["state"] in ("FILLED", "TERMINAL")
-        if was_terminal and filled > rec["filled"] + DUST:
-            self.anomalies.append(f"late fill on {cid} after terminal ({rec['filled']} -> {filled})")
-            self._j("anomaly", what=self.anomalies[-1])
-        if filled + DUST < rec["filled"]:
-            self.anomalies.append(f"filled_qty decreased on {cid}")
-            self._j("anomaly", what=self.anomalies[-1])
-            return
-        state = "FILLED" if status == "filled" else "TERMINAL" if status in TERMINAL else "OPEN" if status in OPEN \
-            else rec["state"]
+        if not isinstance(o, dict):
+            return self._anomaly(f"{cid}: broker order is not an object")
+        bad = []
+        if o.get("client_order_id") != cid:
+            bad.append(f"client_order_id {o.get('client_order_id')!r}")
+        if _sym(o.get("symbol")) != _sym(self.symbol):
+            bad.append(f"symbol {o.get('symbol')!r}")
+        if o.get("side") != rec["side"]:
+            bad.append(f"side {o.get('side')!r}")
+        raw = o.get("filled_qty", 0.0)
+        filled = None
+        if not isinstance(raw, bool):
+            try:
+                filled = float(raw)
+            except (TypeError, ValueError):
+                filled = None
+        if filled is None or not math.isfinite(filled) or filled < 0 or filled > rec["qty"] + DUST:
+            bad.append(f"filled_qty {raw!r}")
+        if bad:
+            return self._anomaly(f"{cid}: returned order rejected as evidence ({'; '.join(bad)})")
+        status = str(o.get("status"))
         if status not in OPEN | TERMINAL:
-            self.anomalies.append(f"unrecognized status {status!r} on {cid}")
-            self._j("anomaly", what=self.anomalies[-1])
+            return self._anomaly(f"{cid}: unrecognized status {status!r}")
+        if filled + DUST < rec["filled"]:
+            return self._anomaly(f"{cid}: filled_qty decreased ({rec['filled']} -> {filled})")
+        if rec["state"] in ("FILLED", "TERMINAL") and filled > rec["filled"] + DUST:
+            self._anomaly(f"{cid}: late fill after terminal ({rec['filled']} -> {filled})")
+        state = "FILLED" if status == "filled" else "TERMINAL" if status in TERMINAL else "OPEN"
         if rec["state"] == "CANCEL_UNKNOWN" and state == "OPEN":
-            state = "CANCEL_UNKNOWN"          # a still-open order after an unconfirmed cancel stays unresolved
+            state = "CANCEL_UNKNOWN"
+        if filled > rec["filled"] + DUST:
+            self.position_stale = True                           # inventory changed since the last read
         rec.update(state=state, filled=max(rec["filled"], filled), order_id=o.get("id") or rec["order_id"])
         self._j("order_state", cid=cid, state=rec["state"], filled=rec["filled"], order_id=rec["order_id"])
 
@@ -152,35 +235,53 @@ class Harness:
                 continue
             self._apply(cid, o)
 
+    def _deadline_ok(self, purpose):
+        now = self.wall()
+        test_end = self.start_wall + self.max_wall_s
+        return now <= (test_end + self.cleanup_allowance_s if purpose == "cleanup" else test_end)
+
     def _submit(self, side, qty, otype, price_ref, purpose, limit=None):
-        if not isinstance(qty, (int, float)) or isinstance(qty, bool) or not math.isfinite(qty) or qty <= 0:
+        q, px = _pos_num(qty), _pos_num(price_ref)
+        if q is None:
             self._refuse(f"invalid quantity {qty!r}")
-        notional = float(qty) * float(limit if limit else price_ref)
+        if px is None:
+            self._refuse(f"invalid price reference {price_ref!r}")
+        if otype == "limit" or limit is not None:
+            if _pos_num(limit) is None:
+                self._refuse(f"invalid limit {limit!r}")
+        notional = _pos_num(q * float(limit if limit is not None else px))
+        if notional is None:
+            self._refuse("notional is not finite and positive")
         if notional > self.max_order_notional + 1e-9:
             self._refuse(f"order notional {notional:.2f} > {self.max_order_notional}")
         if side == "buy" and self.buy_notional + notional > self.max_buy_total + 1e-9:
             self._refuse(f"aggregate buy notional would exceed {self.max_buy_total}")
+        if not self._deadline_ok(purpose):
+            self._refuse(f"{purpose} deadline passed (checked at the submission boundary)")
         if self.blocked():
             self._refuse("blocked: " + "; ".join(self.blocked()))
+        if not self.position_confirmed():
+            self._refuse("position unknown or stale: confirm a fresh position read before any submission")
         if side == "sell":
             avail = self.available()
-            if avail is None:
-                self._refuse("sell refused: position or order state unknown")
-            if qty > avail + DUST:
-                self._refuse(f"sell {qty} exceeds confirmed unreserved inventory {avail}")
+            if avail is None or q > avail + DUST:
+                self._refuse(f"sell {q} exceeds confirmed unreserved inventory {avail}")
         cap = self.max_orders - (0 if purpose == "cleanup" else self.reserve)
         if self.attempts >= cap:
             self._refuse(f"{purpose} order budget exhausted ({self.attempts}/{cap})")
         cid = f"pt-{self.run_id}-{self.attempts + 1}"
-        self.orders[cid] = {"cid": cid, "side": side, "qty": float(qty), "type": otype, "limit": limit,
+        try:                                              # durable BEFORE any state change or transport call
+            self._j("attempt", cid=cid, side=side, qty=q, type=otype, limit=limit, notional=notional, purpose=purpose)
+        except OSError as e:
+            self._refuse(f"persistence failure, nothing submitted: {e}")
+        self.orders[cid] = {"cid": cid, "side": side, "qty": q, "type": otype, "limit": limit,
                             "state": "UNKNOWN", "filled": 0.0, "order_id": None, "purpose": purpose}
         self.attempts += 1
         if side == "buy":
             self.buy_notional += notional
-        self._j("attempt", cid=cid, side=side, qty=float(qty), type=otype, limit=limit, notional=notional,
-                purpose=purpose)                          # durable BEFORE the transport call
+        self.position_stale = True                        # any submission may change inventory
         try:
-            o = self.t.submit_order({"symbol": self.symbol, "side": side, "qty": float(qty), "type": otype,
+            o = self.t.submit_order({"symbol": self.symbol, "side": side, "qty": q, "type": otype,
                                      "limit_price": limit, "client_order_id": cid,
                                      "time_in_force": "ioc" if otype == "market" else "gtc"})
         except Rejected as e:
@@ -195,7 +296,10 @@ class Harness:
 
     def _refuse(self, why):
         self.local_refusals.append(why)
-        self._j("local_refusal", why=why)
+        try:
+            self._j("local_refusal", why=why)
+        except OSError:
+            pass
         raise LocalRefusal(why)
 
     def cancel(self, cid):
@@ -228,25 +332,23 @@ class Harness:
 
     def p6_partial_probe_qty(self, requested_qty, price_ref, min_qty):
         """P6 sizing: min(requested, confirmed unreserved inventory, notional cap). Never buys to create size."""
-        self.reconcile()
-        self.read_position()
-        avail = self.available()
-        if avail is None:
-            return None, "INCONCLUSIVE: inventory unknown"
-        q = min(float(requested_qty), avail, self.max_order_notional / float(price_ref))
+        self.refresh()
+        avail, px = self.available(), _pos_num(price_ref)
+        if avail is None or px is None:
+            return None, "INCONCLUSIVE: inventory or price unknown"
+        q = min(float(requested_qty), avail, self.max_order_notional / px)
         if q < min_qty:
             return None, f"INCONCLUSIVE: capped size {q} below minimum {min_qty} within limits"
         return q, "OK"
 
     def cleanup(self, price_ref):
-        """Cancel our open orders (confirmed), reconcile, and sell remaining CONFIRMED inventory ONLY if nothing is
-        unknown. At most ONE cleanup market sell per invocation; never a second while the first is unresolved."""
+        """Cancel our open orders (confirmed), refresh, and sell remaining CONFIRMED inventory ONLY if nothing is
+        unknown and the cleanup allowance has not expired. At most ONE cleanup sell per invocation."""
         self._j("cleanup_start")
         for o in list(self.open_orders()):
             self.cancel(o["cid"])
-        self.reconcile()
-        self.read_position()
-        if self.blocked() or self.position is None:
+        self.refresh()
+        if self.blocked() or not self.position_confirmed():
             return self._finish("UNRESOLVED")
         avail = self.available()
         if avail and avail > DUST:
@@ -254,11 +356,9 @@ class Harness:
                 cid = self._submit("sell", avail, "market", price_ref, "cleanup")
             except LocalRefusal:
                 return self._finish("UNRESOLVED")
-            self.reconcile()
-            self.read_position()
-            if self.orders[cid]["state"] not in ("FILLED", "TERMINAL") or self.position is None or self.blocked():
-                return self._finish("UNRESOLVED")
-            if self.position > DUST:
+            self.refresh()
+            if self.orders[cid]["state"] not in ("FILLED", "TERMINAL") or not self.position_confirmed() \
+                    or self.blocked() or self.position > DUST:
                 return self._finish("UNRESOLVED")
         if self.open_orders():
             return self._finish("UNRESOLVED")
@@ -272,17 +372,17 @@ class Harness:
 
     def report(self):
         return {"status": self.status, "forced": self.forced, "attempts": self.attempts, "max_orders": self.max_orders,
-                "position": self.position, "residual_exposure_known": self.position,
+                "position": self.position, "position_stale": self.position_stale,
                 "unresolved_orders": self.unresolved(), "open_orders": [o["cid"] for o in self.open_orders()],
                 "anomalies": list(self.anomalies), "local_refusals": list(self.local_refusals),
                 "human_reconciliation_required": self.status != "CLEAN"}
 
     def run(self, steps, price_ref):
-        """steps: callables(harness). Stops on StopCondition, anomalies, wall clock, or KeyboardInterrupt."""
+        """steps: callables(harness). Stops on StopCondition, refusals, anomalies, the test deadline, or Ctrl-C."""
         try:
             for step in steps:
-                if self.clock() - self.t0 > self.max_wall_s:
-                    raise StopCondition("wall clock limit")
+                if not self._deadline_ok("test"):
+                    raise StopCondition("test deadline passed")
                 if self.blocked():
                     raise StopCondition("blocked: " + "; ".join(self.blocked()))
                 step(self)

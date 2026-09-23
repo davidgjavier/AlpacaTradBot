@@ -1,0 +1,263 @@
+test_v1_rule_resells_after_a_lost_cleanup_response (test_paper_harness.D1_PlanV1CleanupRuleDefect) ... Exception ignored in: <_io.FileIO name='/tmp/tmp6vh3lney/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp6vh3lney/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_v1_rule_sells_while_a_cancellation_is_unknown (test_paper_harness.D1_PlanV1CleanupRuleDefect) ... Exception ignored in: <_io.FileIO name='/tmp/tmpgdpkm4mh/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpgdpkm4mh/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_no_default_transport (test_paper_harness.N0_Hygiene) ... ok
+test_source_has_no_bot_credential_or_network_imports (test_paper_harness.N0_Hygiene) ... ok
+test_404_after_lost_response_is_not_resolution (test_paper_harness.N1_UnknownOrders) ... Exception ignored in: <_io.FileIO name='/tmp/tmpr4ib5p20/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpr4ib5p20/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_accepted_order_with_lost_response_blocks_everything_including_cleanup (test_paper_harness.N1_UnknownOrders) ... Exception ignored in: <_io.FileIO name='/tmp/tmp2jktjt3u/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp2jktjt3u/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_cleanup_never_submits_a_second_sell_while_the_first_is_unknown (test_paper_harness.N1_UnknownOrders) ... Exception ignored in: <_io.FileIO name='/tmp/tmp3hnh6qp4/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp3hnh6qp4/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_lost_response_then_positive_reconciliation_unblocks_correctly (test_paper_harness.N1_UnknownOrders)
+Counterpart: a lost response later FOUND by client id is positive evidence; cleanup may then proceed. ... Exception ignored in: <_io.FileIO name='/tmp/tmpcy4pqurr/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpcy4pqurr/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_unknown_cancellation_blocks_cleanup_sell (test_paper_harness.N1_UnknownOrders) ... Exception ignored in: <_io.FileIO name='/tmp/tmpgvk5lcr3/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpgvk5lcr3/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_adverse_fill_of_far_limit_is_a_stop_and_cleanup_stays_within_reserve (test_paper_harness.N2_LateFillsAndReads) ... Exception ignored in: <_io.FileIO name='/tmp/tmpajfil6ei/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpajfil6ei/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_failed_position_read_blocks_cleanup_sell (test_paper_harness.N2_LateFillsAndReads) ... Exception ignored in: <_io.FileIO name='/tmp/tmpqsk54ogm/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpqsk54ogm/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_late_fill_after_terminal_is_an_anomaly_and_stops (test_paper_harness.N2_LateFillsAndReads) ... Exception ignored in: <_io.FileIO name='/tmp/tmpwqpc3pt1/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpwqpc3pt1/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_duplicate_callbacks_do_not_double_count (test_paper_harness.N3_DuplicatesAndRestart) ... Exception ignored in: <_io.FileIO name='/tmp/tmpzgfjfjjf/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpzgfjfjjf/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_restart_rebuilds_state_keeps_budget_and_refuses_new_orders_while_unresolved (test_paper_harness.N3_DuplicatesAndRestart) ... Exception ignored in: <_io.FileIO name='/tmp/tmpu76wzjii/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpu76wzjii/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_aggregate_buy_cap (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmpd7wtamft/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpd7wtamft/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_exhausted_cleanup_budget_reports_residual_exposure (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmpfrjfmpds/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpfrjfmpds/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_graceful_ctrl_c_runs_cleanup_under_the_invariant (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmpnvayj0hk/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpnvayj0hk/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_oversized_quantity_and_notional_are_refused_locally_with_zero_submissions (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmpox0ghy1r/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpox0ghy1r/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_rejected_and_duplicate_submissions_count_against_budget_and_reserve_is_kept (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmp0oopl4jo/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp0oopl4jo/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_second_ctrl_c_during_cleanup_is_forced_and_journal_survives (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmp4eig6c6c/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp4eig6c6c/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_sell_capped_by_confirmed_unreserved_inventory (test_paper_harness.N4_BudgetLimitsInterrupt) ... Exception ignored in: <_io.FileIO name='/tmp/tmp1m89fcls/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp1m89fcls/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown (test_paper_harness_hardening.H1_ReturnedOrderIdentity) ... Exception ignored in: <_io.FileIO name='/tmp/tmpnjcm5ts1/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 94, in test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpnjcm5ts1/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmprgpztgi8/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 94, in test_mismatched_returned_identity_is_an_anomaly_and_state_stays_unknown
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmprgpztgi8/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpy9zmp1ms/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpy9zmp1ms/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state (test_paper_harness_hardening.H2_CumulativeFillValidation) ... Exception ignored in: <_io.FileIO name='/tmp/tmp0lv1x8z7/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 111, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp0lv1x8z7/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpy9mihcb0/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 111, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpy9mihcb0/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpevip47ds/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 111, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpevip47ds/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpuq9kpcn9/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 111, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpuq9kpcn9/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmp8oxbp30g/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 111, in test_invalid_filled_qty_is_an_anomaly_and_never_zeroes_state
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp8oxbp30g/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpj860reyq/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpj860reyq/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_boolean_position_is_invalid (test_paper_harness_hardening.H3_BooleanPosition) ... Exception ignored in: <_io.FileIO name='/tmp/tmpdzz0vwgf/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpdzz0vwgf/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_replay_under_different_run_account_or_symbol_is_refused (test_paper_harness_hardening.H4_JournalBinding) ... ok
+test_restart_keeps_the_original_deadline (test_paper_harness_hardening.H4_JournalBinding) ... Exception ignored in: <_io.FileIO name='/tmp/tmp_s_9uzgg/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp_s_9uzgg/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_single_writer (test_paper_harness_hardening.H4_JournalBinding) ... ok
+test_sell_sized_from_a_pre_fill_read_is_refused_until_re_read (test_paper_harness_hardening.H5_StalePositionAfterFills) ... Exception ignored in: <_io.FileIO name='/tmp/tmpilfsmm3e/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpilfsmm3e/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_cleanup_after_the_allowance_is_refused_and_unresolved (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... Exception ignored in: <_io.FileIO name='/tmp/tmps6ntchcw/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmps6ntchcw/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_cleanup_has_a_bounded_allowance_after_the_test_deadline (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... Exception ignored in: <_io.FileIO name='/tmp/tmp3xng9_ll/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp3xng9_ll/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_journal_write_failure_refuses_without_submitting_or_phantom_state (test_paper_harness_hardening.H6_CleanupAllowanceAndPersistence) ... ok
+test_buy_after_failed_position_read_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission) ... Exception ignored in: <_io.FileIO name='/tmp/tmpjitpkl8_/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpjitpkl8_/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_buy_with_unknown_position_is_refused (test_paper_harness_hardening.R1_UnknownPositionBlocksSubmission) ... Exception ignored in: <_io.FileIO name='/tmp/tmp729680fs/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp729680fs/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_price_limit_and_notional_must_be_finite_positive_non_boolean (test_paper_harness_hardening.R2_NonFiniteNumbers) ... Exception ignored in: <_io.FileIO name='/tmp/tmp12fibhm6/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp12fibhm6/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpktwctfv0/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpktwctfv0/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmp82qalkyc/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp82qalkyc/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmp2_qmspez/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp2_qmspez/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmp89ddxd1s/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp89ddxd1s/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmp1ed85jxn/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp1ed85jxn/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpdpscvqo2/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness_hardening.py", line 71, in test_price_limit_and_notional_must_be_finite_positive_non_boolean
+    h, _ = make(f)
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpdpscvqo2/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+Exception ignored in: <_io.FileIO name='/tmp/tmpue99_qkm/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmpue99_qkm/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+test_direct_call_after_test_deadline_is_refused (test_paper_harness_hardening.R3_DeadlineAtSubmissionBoundary) ... Exception ignored in: <_io.FileIO name='/tmp/tmp6k0zlvft/journal.jsonl.lock' mode='ab' closefd=True>
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py", line 550, in _callTestMethod
+    method()
+ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp6k0zlvft/journal.jsonl.lock' mode='a' encoding='UTF-8'>
+ok
+
+----------------------------------------------------------------------
+Ran 35 tests in 0.046s
+
+OK
+Exception ignored in: <_io.FileIO name='/tmp/tmpu850c7_c/journal.jsonl.lock' mode='ab' closefd=True>
+ResourceWarning: unclosed file <_io.FileIO name='/tmp/tmpu850c7_c/journal.jsonl.lock' mode='ab' closefd=True>
