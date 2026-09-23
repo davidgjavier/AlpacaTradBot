@@ -1,0 +1,727 @@
+From 900d511bf1d1921e11b5234de66151d74a5ded5b Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:14:06 -0700
+Subject: [PATCH 2/2] Stage 2: wall-clock deadlines, late completion discarded,
+ bounded workers
+
+- CallRunner: caller waits a wall-clock budget; a timed-out join does NOT
+  cancel the request; late results are discarded (only caller threads write
+  state). Bounded in-flight workers; saturation fails closed (reads
+  UNAVAILABLE; submits NOT_SUBMITTED with nothing sent and no intent).
+- read(): each attempt gets only the remaining budget; backoff never sleeps
+  past it; slow-drip bounded by the caller deadline.
+- submit: single POST on a reserved worker; DEADLINE -> UNRESOLVED, reconciled
+  by the same client id.
+- Integration fix: gateway tracks in-flight POSTs per client id; abandon and
+  release refuse while the POST is in flight (found by combining stage 2 with
+  round 3b; reproduced first).
+- Workers inherit the caller thread name (tracing; preserved a round-2 fixture).
+
+Tests: stage-2 suite 10 (7 fail on 127b6d0; 10 pass); stage-1 85 unchanged.
+95/95; combined single-process runs and repeat runs stable.
+---
+ review/p8_sdk_transport/STAGE2_REVIEW.md      | 101 ++++++++++
+ review/p8_sdk_transport/proposed/broker_io.py | 187 ++++++++++++++++--
+ .../proposed/test_p8_round4.py                |  30 +++
+ .../round4_full10_BEFORE_127b6d0.txt          |  80 ++++++++
+ .../stage2_evidence/test_broker_io_AFTER.txt  |  38 ++++
+ .../stage2_evidence/test_p8_round2_AFTER.txt  |  25 +++
+ .../stage2_evidence/test_p8_round3_AFTER.txt  |  27 +++
+ .../stage2_evidence/test_p8_round3b_AFTER.txt |  27 +++
+ .../stage2_evidence/test_p8_round4_AFTER.txt  |  17 ++
+ 9 files changed, 512 insertions(+), 20 deletions(-)
+ create mode 100644 review/p8_sdk_transport/STAGE2_REVIEW.md
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/round4_full10_BEFORE_127b6d0.txt
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/test_broker_io_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/test_p8_round2_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/test_p8_round3_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/test_p8_round3b_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2_evidence/test_p8_round4_AFTER.txt
+
+diff --git a/review/p8_sdk_transport/STAGE2_REVIEW.md b/review/p8_sdk_transport/STAGE2_REVIEW.md
+new file mode 100644
+index 0000000..3073ce9
+--- /dev/null
++++ b/review/p8_sdk_transport/STAGE2_REVIEW.md
+@@ -0,0 +1,101 @@
++# Stage 2 — Timeout/deadline hardening (P8 wrapper) — OFFLINE
++
++- **Branch:** `review/p8-sdk-wrapper`
++- **Commits:**
++  - `7589d63` — tests only
++  - *fix commit* — see `git log`
++- **Baseline:** `127b6d0` (round-3b fix `a190fef`). Stage-1 fixes and their 85 regression tests are
++  preserved and unchanged.
++- **Isolation:** nothing wired into any bot, deployed or broker-connected.
++
++## Design (as implemented)
++
++Constraint honored: **timing out a thread join does not cancel the HTTP request**, which may still
++complete later.
++
++1. **`CallRunner`:** each broker call runs in a daemon worker; the *caller* waits at most a
++   wall-clock budget. On timeout the caller gets `DEADLINE`. The worker keeps running, and its late
++   result is **discarded**: only caller threads write intent state, so a late response can never
++   mutate state out of order. Workers inherit the caller's thread name, for tracing.
++2. **Bounded workers:** `MAX_INFLIGHT_CALLS = 8`, counting abandoned-but-running workers.
++   Saturation fails closed:
++   - reads → `UNAVAILABLE`;
++   - submits → `NOT_SUBMITTED` with **nothing sent and no intent created**. The worker slot is
++     reserved *before* the intent row.
++3. **`read()`:** every attempt gets only the remaining wall-clock budget, and backoff never sleeps
++   past it. A slow-drip response that the socket inactivity timeout can't catch is now bounded by the
++   caller deadline.
++4. **Submit:** a single POST on the reserved worker with `SUBMIT_DEADLINE_S` (proposal: 15 s).
++   `DEADLINE` → **UNRESOLVED** (never "not sent"), then reconciled by the same client id.
++5. **In-flight tracking (integration fix):** the gateway tracks client ids whose POST worker hasn't
++   finished. **Abandon and release refuse while the id is in flight**, checked before and after the
++   fresh broker check.
++
++Socket timeouts, (connect, read), remain as a second layer: they eventually free workers except on
++slow-drip.
++
++## Results (identical fixtures)
++
++| Suite | Before (`127b6d0`) | After |
++|---|---|---|
++| `test_p8_round4.py` (10, real wall-clock and loopback) | **7 fail** (6 failures, 1 error); 3 pass | **10 pass** |
++| Stage-1 suites: 30 + 15 + 21 + 19 = 85 | 85 pass | **85 pass, unchanged** |
++
++- **Total: 95/95.**
++- **Stability:**
++  - 5 combined single-process runs of all 93 tests (before the integration addition), all passing;
++  - 3 combined runs of all 95;
++  - Stage-2 suite 10/10 twice (before and after the integration fix);
++  - reversed module order passes.
++- **Changed expectations: none.**
++- **Baseline passes (guards):**
++  - backoff truncation (already correct);
++  - late-response discard (trivial on a baseline that never returns early);
++  - abandon allowed once the worker finished (control for the in-flight refusal).
++
++**Baseline failures, measured:**
++- a 2 s hang returned OK against a 0.4 s budget;
++- slow-drip still blocked after 4 s;
++- submit blocked 1.22 s against a 0.3 s deadline;
++- a lookup hang blocked 2.03 s;
++- a stalled POST blocked 1.02 s;
++- no bounded runner existed;
++- **abandon succeeded while the POST was still in flight.**
++
++## Integration failures found (not assumed away)
++
++1. **Thread identity.** Moving calls into workers would have broken per-caller attribution; a
++   round-2 fixture keys on thread name. Resolved by name inheritance. A production concern too (logs
++   and tracing).
++2. **In-flight POST vs human resolution (new, real).** A deadline-abandoned POST can land *after* an
++   operator's NEGATIVE_COMPLETE check. Reproduced (abandoned while in flight), then fixed (in-flight
++   refusal), with a control test.
++3. **Missing import** (`threading`): caught by the first combined run.
++
++## Remaining risks (open)
++
++- **Process-local knowledge only.** After a crash or restart, in-flight tracking is lost. A POST sent
++  just before a crash can still land after an operator check. Only monitoring (late order → CONFLICT,
++  re-lock) covers this.
++- **Shared `requests.Session` across threads.** An abandoned POST worker and new calls can use the
++  same SDK session concurrently. urllib3 pools are thread-safe; `requests.Session` isn't formally
++  guaranteed. Untested against real network or TLS.
++- **Worker leak under persistent slow-drip:** bounded by `MAX_INFLIGHT_CALLS`, then fail-closed. The
++  system stays safe but stops trading until workers finish.
++- **DNS resolution stalls:** bounded for the caller by the runner, but the worker may run long.
++  Untested (offline).
++- **Deadline values are proposals** (8 s read, 15 s submit, 8 workers). No latency data yet; P7-RO or
++  P3 would inform them.
++- **Carried:**
++  - human-resolution policy UNAPPROVED;
++  - CONFLICT and `ACCEPTED_UNVERIFIED` resolution workflows;
++  - normalization assumptions;
++  - intent ↔ accounting (`cbf1b9b`);
++  - paper-plan corrections;
++  - P7-RO and P3 pending.
++
++## Next
++
++Stages 3–5 (isolated integration, combined validation, paper-test preparation) were referenced by
++the user's status update, but **no specification for them was found** in the message or the saved
++files. Waiting for that spec before touching shared trading code.
+diff --git a/review/p8_sdk_transport/proposed/broker_io.py b/review/p8_sdk_transport/proposed/broker_io.py
+index 02ff719..0e76286 100644
+--- a/review/p8_sdk_transport/proposed/broker_io.py
++++ b/review/p8_sdk_transport/proposed/broker_io.py
+@@ -32,6 +32,7 @@ import hashlib
+ import json
+ import random
+ import sqlite3
++import threading
+ import time
+ import uuid
+ from contextlib import closing
+@@ -45,7 +46,9 @@ from requests.adapters import HTTPAdapter
+ 
+ SUPPORTED_SDK_VERSION = "0.43.5"
+ DEFAULT_TIMEOUT = (3.05, 10.0)          # (connect, read) seconds — proposal, tune after P-tests
+-READ_DEADLINE_S = 8.0                   # total budget for one logical read incl. retries
++READ_DEADLINE_S = 8.0                   # WALL-CLOCK budget for one logical read incl. retries (stage 2)
++SUBMIT_DEADLINE_S = 15.0                # WALL-CLOCK budget the caller waits for the single POST (stage 2)
++MAX_INFLIGHT_CALLS = 8                  # bound on worker threads (incl. ones abandoned at a deadline)
+ READ_MAX_ATTEMPTS = 5
+ VISIBILITY_WINDOW_S = 30.0              # before "not found" may be treated as absence (UNVERIFIED value)
+ RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+@@ -133,6 +136,87 @@ def is_retryable(e) -> bool:
+ 
+ 
+ # ------------------------------------------------------------------ reads
++# ------------------------------------------------------------------ wall-clock deadlines (stage 2)
++@dataclass
++class CallOutcome:
++    state: str                     # OK | ERROR | DEADLINE | SATURATED
++    value: Any = None
++    error: Optional[BaseException] = None
++
++
++class CallRunner:
++    """Runs one broker call in a daemon worker thread; the CALLER waits at most `timeout_s`
++    wall-clock seconds.
++
++    A timed-out wait does NOT cancel the request: the worker keeps running and may complete
++    later (late completion). Its result is DISCARDED: never returned and never applied, because
++    only caller threads write state. The number of workers, including abandoned ones still in
++    flight, is bounded. When the bound is reached, calls fail closed (SATURATED) without sending
++    anything. Workers inherit the caller's thread name for tracing."""
++
++    def __init__(self, max_inflight: int = MAX_INFLIGHT_CALLS):
++        self.max_inflight = max_inflight
++        self._lock = threading.Lock()
++        self.inflight = 0
++        self.abandoned = 0          # waits that hit the deadline
++        self.late_completions = 0   # abandoned calls that later finished (result discarded)
++
++    def reserve(self) -> bool:
++        with self._lock:
++            if self.inflight >= self.max_inflight:
++                return False
++            self.inflight += 1
++            return True
++
++    def release_unused(self):
++        with self._lock:
++            self.inflight -= 1
++
++    def run_reserved(self, fn: Callable[[], Any], timeout_s: float,
++                     on_done: Optional[Callable[[], None]] = None) -> CallOutcome:
++        """on_done runs in the WORKER when the request actually finishes (even after the caller
++        gave up), so callers can track what is still in flight. It must not write intent state."""
++        box, done, flag = {}, threading.Event(), {"abandoned": False}
++
++        def work():
++            try:
++                box["v"] = fn()
++            except BaseException as e:  # noqa: BLE001
++                box["e"] = e
++            finally:
++                if on_done:
++                    try:
++                        on_done()
++                    except Exception:  # noqa: BLE001
++                        pass
++                with self._lock:
++                    self.inflight -= 1
++                    if flag["abandoned"]:
++                        self.late_completions += 1
++                done.set()
++        threading.Thread(target=work, daemon=True, name=threading.current_thread().name).start()
++        if not done.wait(max(0.0, timeout_s)):
++            with self._lock:
++                if not done.is_set():
++                    flag["abandoned"] = True
++                    self.abandoned += 1
++            if flag["abandoned"]:
++                return CallOutcome("DEADLINE", error=TimeoutError(
++                    f"no result within {timeout_s:.2f}s; request NOT cancelled and may complete late"))
++        if "e" in box:
++            return CallOutcome("ERROR", error=box["e"])
++        return CallOutcome("OK", value=box.get("v"))
++
++    def try_run(self, fn: Callable[[], Any], timeout_s: float) -> CallOutcome:
++        if not self.reserve():
++            return CallOutcome("SATURATED", error=RuntimeError(
++                f"{self.max_inflight} broker calls already in flight; failing closed"))
++        return self.run_reserved(fn, timeout_s)
++
++
++DEFAULT_RUNNER = CallRunner()
++
++
+ @dataclass
+ class ReadResult:
+     state: str                     # OK | NOT_FOUND | UNAVAILABLE | ERROR
+@@ -144,24 +228,40 @@ class ReadResult:
+ def read(fn: Callable[[], Any], deadline_s: float = READ_DEADLINE_S, max_attempts: int = READ_MAX_ATTEMPTS,
+          base_backoff_s: float = 0.25, max_backoff_s: float = 2.0,
+          clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+-         rng: random.Random = random.Random(0)) -> ReadResult:
+-    """Bounded retries for READ-ONLY calls. Never returns NOT_FOUND for anything but a
+-    structured 404/40410000; exhausted retries are UNAVAILABLE, never 'absent'."""
++         rng: random.Random = random.Random(0), runner: Optional["CallRunner"] = None) -> ReadResult:
++    """Bounded retries for READ-ONLY calls within a WALL-CLOCK budget (stage 2).
++
++    Every attempt runs through a CallRunner and is given only the REMAINING budget, and backoff
++    never sleeps past it, so the caller never waits materially longer than `deadline_s`, including
++    on slow-drip responses the socket read timeout cannot catch. A timed-out attempt may still
++    complete late; its result is discarded. Never returns NOT_FOUND for anything but a structured
++    404/40410000; exhausted budget, saturation or deadline are UNAVAILABLE, never 'absent'."""
++    runner = runner or DEFAULT_RUNNER
++    wall_start = time.monotonic()                 # real time bounds the caller even with a fake clock
++
++    def remaining():
++        return min(deadline_s - (clock() - start), deadline_s - (time.monotonic() - wall_start))
+     start, attempt, last = clock(), 0, None
+     while attempt < max_attempts:
++        left = remaining()
++        if left <= 0:
++            break
+         attempt += 1
+-        try:
+-            return ReadResult("OK", fn(), attempt)
+-        except Exception as e:  # noqa: BLE001
+-            last = e
+-            if is_confirmed_not_found(e):
+-                return ReadResult("NOT_FOUND", None, attempt, str(e)[:200])
+-            if not is_retryable(e):
+-                return ReadResult("ERROR", None, attempt, f"{type(e).__name__}: {str(e)[:200]}")
+-            delay = min(max_backoff_s, base_backoff_s * (2 ** (attempt - 1))) * (0.5 + rng.random() / 2)
+-            if clock() - start + delay >= deadline_s:
+-                break
+-            sleep(delay)
++        out = runner.try_run(fn, left)
++        if out.state == "OK":
++            return ReadResult("OK", out.value, attempt)
++        if out.state in ("DEADLINE", "SATURATED"):
++            return ReadResult("UNAVAILABLE", None, attempt, f"{out.state}: {out.error}")
++        e = out.error
++        last = e
++        if is_confirmed_not_found(e):
++            return ReadResult("NOT_FOUND", None, attempt, str(e)[:200])
++        if not is_retryable(e):
++            return ReadResult("ERROR", None, attempt, f"{type(e).__name__}: {str(e)[:200]}")
++        delay = min(max_backoff_s, base_backoff_s * (2 ** (attempt - 1))) * (0.5 + rng.random() / 2)
++        if delay >= remaining():
++            break
++        sleep(delay)
+     return ReadResult("UNAVAILABLE", None, attempt, f"{type(last).__name__}: {str(last)[:200]}")
+ 
+ 
+@@ -496,6 +596,20 @@ class OrderGateway:
+         self.now_ns, self.read_kw = now_ns, (read_kw or {})
+         self.window_ns = int(visibility_window_s * 1e9)
+         self.scan_max_pages, self.scan_page_limit = scan_max_pages, scan_page_limit
++        self.runner = CallRunner()                  # stage 2: bounded workers, wall-clock waits
++        self.submit_deadline_s = SUBMIT_DEADLINE_S
++        self._inflight_lock = threading.Lock()
++        self._inflight_cids = set()                 # POSTs whose worker has not finished (process-local)
++
++    def submit_in_flight(self, cid) -> bool:
++        with self._inflight_lock:
++            return cid in self._inflight_cids
++
++    def _rk(self) -> dict:
++        """read() kwargs with this gateway's runner (tests may replace self.runner at any time)."""
++        kw = dict(self.read_kw)
++        kw.setdefault("runner", self.runner)
++        return kw
+ 
+     @staticmethod
+     def _payload(order_request) -> dict:
+@@ -547,20 +661,25 @@ class OrderGateway:
+             if existing["payload_sha"] != self._sha(payload):
+                 raise ValueError(f"client_order_id {cid} already used with a different payload")
+             return self._from_row(cid, detail="existing intent; no POST")
++        if not self.runner.reserve():               # stage 2: fail closed BEFORE creating any intent
++            return SubmitResult("NOT_SUBMITTED", cid, persisted=True,
++                                detail="broker call capacity saturated; nothing sent; no intent created")
+         try:
+             created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
+         except PersistenceError as e:
++            self.runner.release_unused()
+             # History was readable and had no row for this id, so nothing was sent under it.
+             return SubmitResult("NOT_SUBMITTED", cid, detail="no prior intent; new intent not durable; nothing sent",
+                                 persisted=False, persistence_error=str(e))
+         if not created:                             # another caller won the insert and owns the POST
++            self.runner.release_unused()
+             return self._from_row(cid, detail="intent owned by another caller; no POST")
+         return self._post_and_record(order_request, cid, payload)
+ 
+     def _unreadable_history(self, cid, payload, err) -> SubmitResult:
+         base = dict(persisted=False, persistence_error=err)
+         why = "prior intent history unreadable; client id retained; do NOT retry or replace"
+-        r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
++        r = read(lambda: self.client.get_order_by_client_id(cid), **self._rk())
+         if r.state == "OK":
+             mm = identity_mismatches(json.loads(json.dumps(payload, default=str)), r.value)
+             if mm:
+@@ -572,8 +691,29 @@ class OrderGateway:
+ 
+     def _post_and_record(self, order_request, cid, payload) -> SubmitResult:
+         """The single POST for this id. Never raises after the POST has been attempted."""
++        with self._inflight_lock:
++            self._inflight_cids.add(cid)
++
++        def _done():
++            with self._inflight_lock:
++                self._inflight_cids.discard(cid)
++        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), self.submit_deadline_s,
++                                       on_done=_done)
++        if out.state == "DEADLINE":
++            # The POST may still reach the broker or complete late; its response will be DISCARDED.
++            # Never "not sent": UNRESOLVED, reconciled by the same client id.
++            _, ok, perr = self._record(cid, "UNRESOLVED", error=f"submit deadline {self.submit_deadline_s}s exceeded; "
++                                                                "request not cancelled, may complete late")
++            r = self.reconcile(cid)
++            r.posts_this_call = 1
++            if not ok and r.persisted:
++                r.persisted, r.persistence_error = False, perr
++            r.detail = f"submit deadline exceeded (late completion possible, result discarded); {r.detail}"
++            return r
+         try:
+-            order = self.client.submit_order(order_request)          # exactly one POST (SDK retry=0)
++            if out.state == "ERROR":
++                raise out.error
++            order = out.value                                         # exactly one POST (SDK retry=0)
+         except Exception as e:  # noqa: BLE001
+             s = _status(e)
+             row, _ = self._row(cid)
+@@ -615,7 +755,7 @@ class OrderGateway:
+             cur = cursor
+             lst = read(lambda: self.client.get_orders(GetOrdersRequest(
+                 status=QueryOrderStatus.ALL, after=cur, symbols=[self.symbol], limit=self.scan_page_limit,
+-                direction=Sort.ASC)), **self.read_kw)
++                direction=Sort.ASC)), **self._rk())
+             if lst.state != "OK":
+                 return ScanResult(matches, False, f"page {page} {lst.state}", page)
+             orders = list(lst.value)
+@@ -650,7 +790,7 @@ class OrderGateway:
+         if row["state"] in ("ACCEPTED", "REJECTED"):
+             return self._from_row(cid, detail="already resolved")
+         intent = json.loads(row["payload"])
+-        r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
++        r = read(lambda: self.client.get_order_by_client_id(cid), **self._rk())
+         candidates, how = {}, []
+         if r.state == "OK":
+             candidates[str(r.value.id)] = r.value
+@@ -794,10 +934,15 @@ class OrderGateway:
+         row, err = self._row(cid)
+         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
+             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
++        if self.submit_in_flight(cid):
++            return self._from_row(cid, detail="abandon refused: this process still has the POST for this id in flight")
+         fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "UNRESOLVED":
+             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+             return fresh
++        if self.submit_in_flight(cid):
++            fresh.detail = f"abandon refused: POST for this id in flight; {fresh.detail}"
++            return fresh
+         refusal = self._negative_check_refusal(fresh)
+         if refusal:
+             fresh.detail = f"abandon refused: {refusal}; {fresh.detail}"
+@@ -820,6 +965,8 @@ class OrderGateway:
+         row, err = self._row(cid)
+         if err or row is None or row["state"] != "ABANDONED":
+             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
++        if self.submit_in_flight(cid):
++            return self._from_row(cid, detail="release refused (lock HELD): POST for this id still in flight")
+         fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "ABANDONED":
+             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
+diff --git a/review/p8_sdk_transport/proposed/test_p8_round4.py b/review/p8_sdk_transport/proposed/test_p8_round4.py
+index 6e0e104..9f55593 100644
+--- a/review/p8_sdk_transport/proposed/test_p8_round4.py
++++ b/review/p8_sdk_transport/proposed/test_p8_round4.py
+@@ -190,3 +190,33 @@ class C_BoundedWorkers(unittest.TestCase):
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
++
++class D_Integration_InflightSubmitVsHumanResolution(unittest.TestCase):
++    """Integration hazard found while combining stage 2 with round 3b: a submit abandoned at its
++    deadline may still be in flight; an operator abandon/release in that window would be judged on
++    a broker check that the in-flight POST can invalidate moments later."""
++
++    def test_abandon_refused_while_this_process_still_has_the_post_in_flight(self):
++        b, c, gw, clk, db = make4()
++        b.post_delay_before = 1.0                    # POST stalls, then reaches the broker late
++        r = gw.submit(T.req("r4-d1"), "test")
++        self.assertEqual(r.state, "UNRESOLVED")
++        a = gw.abandon("r4-d1", operator="op", note="n")
++        self.assertNotEqual(gw.store.get("r4-d1")["state"], "ABANDONED",
++                            "abandoned while the POST for this id was still in flight")
++        self.assertTrue(gw.entries_locked()[0])
++        time.sleep(1.3)                              # late POST lands at the broker
++        gw.recover_pending()
++        self.assertIn(gw.store.get("r4-d1")["state"], ("ACCEPTED", "ACCEPTED_UNVERIFIED"))
++        self.assertEqual(len(posts(b)), 1)
++
++    def test_abandon_allowed_again_once_the_worker_has_finished(self):
++        b, c, gw, clk, db = make4()
++        b.post = [("raise", T.requests.exceptions.ConnectTimeout("ct"))]
++        b.post_delay_before = 0.6                    # stalls, then fails without reaching the broker
++        gw.submit(T.req("r4-d2"), "test")
++        time.sleep(0.9)                              # worker has finished (request failed)
++        gw.abandon("r4-d2", operator="op", note="n")
++        self.assertEqual(gw.store.get("r4-d2")["state"], "ABANDONED")
++        self.assertTrue(gw.entries_locked()[0])      # abandon still never unlocks
+diff --git a/review/p8_sdk_transport/stage2_evidence/round4_full10_BEFORE_127b6d0.txt b/review/p8_sdk_transport/stage2_evidence/round4_full10_BEFORE_127b6d0.txt
+new file mode 100644
+index 0000000..733563d
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/round4_full10_BEFORE_127b6d0.txt
+@@ -0,0 +1,80 @@
++# Stage 2 suite (10, incl. 2 integration tests) vs BASELINE 127b6d0, identical fixtures, 2026-09-23 09:14 AM PDT
++test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... FAIL
++test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
++test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... FAIL
++test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
++test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
++test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
++test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ERROR
++test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... FAIL
++
++======================================================================
++ERROR: test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 177, in test_saturated_workers_fail_closed_without_posting
++    gw.runner = B.CallRunner(max_inflight=1)
++AttributeError: module 'broker_io' has no attribute 'CallRunner'
++
++======================================================================
++FAIL: test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 69, in test_read_never_exceeds_wall_clock_budget_on_a_hung_call
++    self.assertEqual(r.state, "UNAVAILABLE")
++AssertionError: 'OK' != 'UNAVAILABLE'
++- OK
+++ UNAVAILABLE
++
++
++======================================================================
++FAIL: test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 118, in test_slow_drip_socket_is_bounded_by_the_caller_deadline
++    self.assertFalse(th.is_alive(), "read() still blocked after 4 s on a slow-drip response")
++AssertionError: True is not false : read() still blocked after 4 s on a slow-drip response
++
++======================================================================
++FAIL: test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 130, in test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted
++    self.assertLess(el, 1.0, f"submit blocked {el:.2f}s past a 0.3s deadline")
++AssertionError: 1.2267617079999988 not less than 1.0 : submit blocked 1.23s past a 0.3s deadline
++
++======================================================================
++FAIL: test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 170, in test_lookup_hang_inside_reconcile_is_bounded
++    self.assertLess(time.monotonic() - t, 1.5)
++AssertionError: 2.0349542080000003 not less than 1.5
++
++======================================================================
++FAIL: test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 157, in test_post_never_reaches_broker_before_deadline_is_unresolved_one_post
++    self.assertLess(time.monotonic() - t, 1.0)
++AssertionError: 1.0200303749999993 not less than 1.0
++
++======================================================================
++FAIL: test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/s2_base/test_p8_round4.py", line 204, in test_abandon_refused_while_this_process_still_has_the_post_in_flight
++    self.assertEqual(r.state, "UNRESOLVED")
++AssertionError: 'ACCEPTED' != 'UNRESOLVED'
++- ACCEPTED
+++ UNRESOLVED
++
++
++----------------------------------------------------------------------
++Ran 10 tests in 14.635s
++
++FAILED (failures=6, errors=1)
+diff --git a/review/p8_sdk_transport/stage2_evidence/test_broker_io_AFTER.txt b/review/p8_sdk_transport/stage2_evidence/test_broker_io_AFTER.txt
+new file mode 100644
+index 0000000..041f333
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/test_broker_io_AFTER.txt
+@@ -0,0 +1,38 @@
++# test_broker_io vs STAGE-2 FIX
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++
++----------------------------------------------------------------------
++Ran 30 tests in 3.049s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/p8_sdk_transport/stage2_evidence/test_p8_round2_AFTER.txt b/review/p8_sdk_transport/stage2_evidence/test_p8_round2_AFTER.txt
+new file mode 100644
+index 0000000..299ba80
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/test_p8_round2_AFTER.txt
+@@ -0,0 +1,25 @@
++# test_p8_round2 vs STAGE-2 FIX
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++
++----------------------------------------------------------------------
++Ran 15 tests in 0.530s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2_evidence/test_p8_round3_AFTER.txt b/review/p8_sdk_transport/stage2_evidence/test_p8_round3_AFTER.txt
+new file mode 100644
+index 0000000..f08b06c
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/test_p8_round3_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3 vs STAGE-2 FIX
++test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
++test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
++test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
++test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
++test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
++test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
++test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
++test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
++test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
++test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
++test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
++test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
++test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
++test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
++
++----------------------------------------------------------------------
++Ran 21 tests in 0.896s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2_evidence/test_p8_round3b_AFTER.txt b/review/p8_sdk_transport/stage2_evidence/test_p8_round3b_AFTER.txt
+new file mode 100644
+index 0000000..053242e
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/test_p8_round3b_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3b vs STAGE-2 FIX
++test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
++test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
++Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
++test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
++test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
++test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
++Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
++test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
++test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++
++----------------------------------------------------------------------
++Ran 19 tests in 1.541s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2_evidence/test_p8_round4_AFTER.txt b/review/p8_sdk_transport/stage2_evidence/test_p8_round4_AFTER.txt
+new file mode 100644
+index 0000000..dc0e52a
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2_evidence/test_p8_round4_AFTER.txt
+@@ -0,0 +1,17 @@
++# test_p8_round4 vs STAGE-2 FIX
++test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... ok
++test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
++test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... ok
++test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ok
++test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++
++----------------------------------------------------------------------
++Ran 10 tests in 9.138s
++
++OK
+-- 
+2.54.0 (Apple Git-157)
+
