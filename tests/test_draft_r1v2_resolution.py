@@ -85,6 +85,27 @@ class D_EndToEndCounterexample(unittest.TestCase):
 
 
 @unittest.skipUnless(ON, "draft")
+class R_DocumentedRisk(unittest.TestCase):
+    """DOCUMENTED RISK (Codex review of ca18144) — this test asserts UNDESIRED behavior on purpose, so the risk stays
+    visible and any change to it is noticed. It is NOT an acceptance test.
+    A correctly bound operator `not_placed` for an attempt the broker ACCEPTED but has not yet surfaced passes every
+    fresh check (client-id 404, absent from open orders, position unchanged). Negative lookups do not prove
+    non-placement. Result: a SECOND sell is submitted and the liquidation completes (pending=false) while the first
+    accepted sell is still outstanding. The resolution writer stays unbuilt; the policy is pending David's decision."""
+
+    def test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes(self):
+        ns, T = escalated_hidden()
+        b = ns["_broker"]
+        put(ns, bound(pending(ns), "not_placed", "risk-1"))
+        T[0] = 1000.0
+        H.cycle(ns)
+        self.assertEqual(len(market_submissions(b)), 2, "documented risk changed: submissions != 2")
+        self.assertFalse(pending(ns), "documented risk changed: liquidation not completed")
+        hidden = [o for o in b.orders.values() if o.kind == "market" and o.status.value in H.OPEN]
+        self.assertEqual(len(hidden), 1, "the first accepted sell should still be outstanding (hidden)")
+
+
+@unittest.skipUnless(ON, "draft")
 class C_BindingAndVerification(unittest.TestCase):
     def test_unbound_resolution_is_rejected(self):
         for missing in ("attempt", "cid", "escalation_id", "nonce", "evidence", "by", "schema"):

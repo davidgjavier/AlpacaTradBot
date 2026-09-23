@@ -1,0 +1,6 @@
+test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes (test_draft_r1v2_resolution.R_DocumentedRisk) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.018s
+
+OK

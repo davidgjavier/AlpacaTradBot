@@ -1,0 +1,80 @@
+test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_timestamps_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_valid_snapshot_ok (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_freshness (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_incomplete_live_read_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_matching_fresh_live_state_passes (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_snapshot_identity_must_match_expected_too (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_codex_counterexample_future_coverage_and_future_fill_blocked (test_draft_d10_hardening.C_Chronology) ... FAIL
+test_coverage_ending_after_capture_time_blocked (test_draft_d10_hardening.C_Chronology) ... FAIL
+test_empty_coverage_window_blocked (test_draft_d10_hardening.C_Chronology) ... FAIL
+test_fill_later_than_taken_at_blocked (test_draft_d10_hardening.C_Chronology) ... FAIL
+test_inverted_coverage_blocked_explicitly (test_draft_d10_hardening.C_Chronology) ... FAIL
+test_valid_boundary_controls (test_draft_d10_hardening.C_Chronology) ... ok
+
+======================================================================
+FAIL: test_codex_counterexample_future_coverage_and_future_fill_blocked (test_draft_d10_hardening.C_Chronology)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 141, in test_codex_counterexample_future_coverage_and_future_fill_blocked
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_coverage_ending_after_capture_time_blocked (test_draft_d10_hardening.C_Chronology)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 151, in test_coverage_ending_after_capture_time_blocked
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_empty_coverage_window_blocked (test_draft_d10_hardening.C_Chronology)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 168, in test_empty_coverage_window_blocked
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_fill_later_than_taken_at_blocked (test_draft_d10_hardening.C_Chronology)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 147, in test_fill_later_than_taken_at_blocked
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_inverted_coverage_blocked_explicitly (test_draft_d10_hardening.C_Chronology)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 160, in test_inverted_coverage_blocked_explicitly
+    self.assertEqual(r["verdict"], "BLOCK", r)
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+ : {'verdict': 'OK_FOR_REVIEW', 'block': [], 'flags': [], 'facts': {'age_s': 300.0, 'position_qty': 0.3, 'd10_condition': False}}
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.111s
+
+FAILED (failures=5)

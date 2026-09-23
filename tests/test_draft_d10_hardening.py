@@ -124,6 +124,66 @@ class A_SnapshotValidation(unittest.TestCase):
 
 
 @unittest.skipUnless(ON, "draft")
+class C_Chronology(unittest.TestCase):
+    """Convention (Stage 5g): taken_at is the single capture instant every list reflects. Fill coverage must END at
+    taken_at (covers_to == taken_at), start before it (covers_from < covers_to, not inverted), and no fill may be
+    later than taken_at. Existing freshness rules (taken_at <= now, max age) are unchanged."""
+
+    def verdict(self, mutate):
+        s, d, e = base()
+        mutate(s, d, e)
+        return m().check(s, d, e)
+
+    def test_codex_counterexample_future_coverage_and_future_fill_blocked(self):
+        def f(s, d, e):
+            s["completeness"]["fills"]["covers_to"] = "2026-09-24T12:00:00+00:00"      # tomorrow
+            s["fills"] = [fill(time="2026-09-24T09:00:00+00:00")]                     # tomorrow
+        self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+
+    def test_fill_later_than_taken_at_blocked(self):
+        def f(s, d, e):
+            s["completeness"]["fills"]["covers_to"] = "2026-09-23T18:00:30+00:00"
+            s["fills"] = [fill(time="2026-09-23T18:00:10+00:00")]
+        self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+
+    def test_coverage_ending_after_capture_time_blocked(self):
+        f = lambda s, d, e: s["completeness"]["fills"].update(covers_to="2026-09-23T18:00:01+00:00")  # noqa: E731
+        self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+
+    def test_inverted_coverage_blocked_explicitly(self):
+        def f(s, d, e):
+            d["breaker_tripped_stamp"] = None                                       # isolate inversion from day rules
+            s["fills"] = []
+            s["completeness"]["fills"].update(covers_from="2026-09-23T19:00:00+00:00",
+                                              covers_to="2026-09-23T18:00:00+00:00")
+        r = self.verdict(f)
+        self.assertEqual(r["verdict"], "BLOCK", r)
+        self.assertTrue(any("invert" in b for b in r["block"]), r["block"])
+
+    def test_empty_coverage_window_blocked(self):
+        def f(s, d, e):
+            d["breaker_tripped_stamp"] = None
+            s["fills"] = []
+            s["completeness"]["fills"].update(covers_from="2026-09-23T18:00:00+00:00")   # == covers_to
+        self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+
+    def test_valid_boundary_controls(self):
+        controls = {
+            "fill exactly at taken_at": lambda s, d, e: s.update(fills=[fill(time="2026-09-23T18:00:00+00:00")]),
+            "fill exactly at covers_from": lambda s, d, e: s.update(fills=[fill(time="2026-09-23T00:00:00+00:00")]),
+            "covers_from exactly day start": lambda s, d, e: None,                   # base already does this
+            "covers_from before day start": lambda s, d, e: s["completeness"]["fills"].update(
+                covers_from="2026-09-22T00:00:00+00:00"),
+            "taken_at == now": lambda s, d, e: e.update(now="2026-09-23T18:00:00+00:00"),
+            "age exactly max": lambda s, d, e: e.update(now="2026-09-23T18:10:00+00:00"),
+        }
+        for label, f in controls.items():
+            with self.subTest(label):
+                r = self.verdict(f)
+                self.assertEqual(r["verdict"], "OK_FOR_REVIEW", (label, r["block"]))
+
+
+@unittest.skipUnless(ON, "draft")
 class B_ApplyTimeGate(unittest.TestCase):
     def gate(self, mutate_live=None, mutate_exp=None):
         s, d, e = base()
