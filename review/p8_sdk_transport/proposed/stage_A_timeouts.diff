@@ -1,0 +1,24 @@
+--- a/crypto_trading_bot.py (94b2efd)
++++ b/crypto_trading_bot.py (PROPOSED Stage A — not applied)
+@@ -114,6 +114,7 @@
+ 
+ import strategies
+ import db
++import broker_io  # review/p8_sdk_transport/proposed/broker_io.py
+ 
+ ACTIVITY_JSON_PATH = os.path.join(os.path.dirname(__file__), "crypto_bot_activity.json")
+ MAX_ACTIVITY_EVENTS = 500
+@@ -170,6 +171,13 @@
+ 
+ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=PAPER)
+ data_client = CryptoHistoricalDataClient()
++# Stage A (P8): explicit (connect, read) timeouts on every request. alpaca-py 0.43.5 passes
++# no timeout, so a silent connection could block the whole loop, protection checks included.
++# The SDK's own 429/504 retries are KEPT here (reads unchanged); this does NOT remove the
++# duplicate-POST risk for submissions (Stage B). Fails closed at startup if the SDK version
++# or its private attributes differ from the reviewed 0.43.5.
++broker_io.apply_timeouts_only(trading_client)
++broker_io.apply_timeouts_only(data_client)
+ 
+ 
+ def log(message):

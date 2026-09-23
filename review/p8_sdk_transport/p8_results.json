@@ -1,0 +1,402 @@
+{
+  "generated": "2026-09-23T14:15:16.676283+00:00",
+  "alpaca_py": "0.43.5",
+  "requests": "2.32.5",
+  "sdk_defaults": {
+    "retry_attempts": 3,
+    "retry_codes": [
+      429,
+      504
+    ],
+    "retry_wait_s": 3
+  },
+  "scenarios": {
+    "S1_429_always": {
+      "posts": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.017,
+      "would_sleep_total_s": 9,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 429,
+        "code": 42910000,
+        "text": "{\"code\": 42910000, \"message\": \"rate limit exceeded\"}"
+      },
+      "broker_orders_created": 0,
+      "broker_distinct_client_ids": 0,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": false,
+        "status_code": 404,
+        "code": 40410000
+      }
+    },
+    "S2_504_always_retry_exhaustion": {
+      "posts": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.009,
+      "would_sleep_total_s": 9,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 504,
+        "code": 50410000,
+        "text": "{\"code\": 50410000, \"message\": \"request timed out\"}"
+      },
+      "broker_orders_created": 0,
+      "broker_distinct_client_ids": 0,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": false,
+        "status_code": 404,
+        "code": 40410000
+      }
+    },
+    "S3_504_504_then_200": {
+      "posts": 3,
+      "retry_sleeps_s": [
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.004,
+      "would_sleep_total_s": 6,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "returned": "Order",
+        "order_id": "03f888a4-2452-407d-99b9-58f4e167ab39",
+        "client_order_id": "p8-cid-0001"
+      },
+      "broker_orders_created": 1,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "03f888a4-2452-407d-99b9-58f4e167ab39",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S4a_accepted_response_lost_504_dup_rejected": {
+      "posts": 2,
+      "retry_sleeps_s": [
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.003,
+      "would_sleep_total_s": 3,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 422,
+        "code": 40010001,
+        "text": "{\"code\": 40010001, \"message\": \"client_order_id must be unique (HYPOTHETICAL)\"}"
+      },
+      "broker_orders_created": 1,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "ddd8e1b7-43f9-40d3-9ef5-1eb1a3dc9a59",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S4b_accepted_response_lost_504_dup_accepted": {
+      "posts": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.007,
+      "would_sleep_total_s": 9,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 504,
+        "code": 50410000,
+        "text": "{\"code\": 50410000, \"message\": \"request timed out\"}"
+      },
+      "broker_orders_created": 4,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "accept (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "e748f7a9-ba96-424d-b08d-e6fd6e312b37",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S4c_NO_client_id_accepted_response_lost_504": {
+      "posts": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.006,
+      "would_sleep_total_s": 9,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 504,
+        "code": 50410000,
+        "text": "{\"code\": 50410000, \"message\": \"request timed out\"}"
+      },
+      "broker_orders_created": 4,
+      "broker_distinct_client_ids": 4,
+      "dup_policy": "accept (HYPOTHETICAL)"
+    },
+    "S4d_accepted_then_429_dup_rejected": {
+      "posts": 2,
+      "retry_sleeps_s": [
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.005,
+      "would_sleep_total_s": 3,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 422,
+        "code": 40010001,
+        "text": "{\"code\": 40010001, \"message\": \"client_order_id must be unique (HYPOTHETICAL)\"}"
+      },
+      "broker_orders_created": 1,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "3a0f6a43-606b-485b-a71d-35c42ff01c59",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S5_connect_timeout": {
+      "posts": 1,
+      "retry_sleeps_s": [],
+      "real_elapsed_s_excluding_sleeps": 0.001,
+      "would_sleep_total_s": 0,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "ConnectTimeout",
+        "text": "simulated connect timeout"
+      },
+      "broker_orders_created": 0,
+      "broker_distinct_client_ids": 0,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": false,
+        "status_code": 404,
+        "code": 40410000
+      }
+    },
+    "S6_read_timeout_after_accept": {
+      "posts": 1,
+      "retry_sleeps_s": [],
+      "real_elapsed_s_excluding_sleeps": 0.002,
+      "would_sleep_total_s": 0,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "ReadTimeout",
+        "text": "simulated read timeout"
+      },
+      "broker_orders_created": 1,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "c1914648-83b2-4d69-b81d-a3e6b309c343",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S6b_connection_reset_after_accept": {
+      "posts": 1,
+      "retry_sleeps_s": [],
+      "real_elapsed_s_excluding_sleeps": 0.001,
+      "would_sleep_total_s": 0,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "ConnectionError",
+        "text": "simulated reset"
+      },
+      "broker_orders_created": 1,
+      "broker_distinct_client_ids": 1,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": true,
+        "order_id": "fc2aba92-7541-406d-b692-f5327c785994",
+        "new_posts_during_recovery": 0
+      }
+    },
+    "S7_504_non_json_body": {
+      "posts": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "real_elapsed_s_excluding_sleeps": 0.008,
+      "would_sleep_total_s": 9,
+      "identical_payload_all_attempts": true,
+      "client_order_id_in_payload": [
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001",
+        "p8-cid-0001"
+      ],
+      "timeout_kwarg_seen_by_transport": [
+        "None"
+      ],
+      "sdk_outcome": {
+        "raised": "APIError",
+        "status_code": 504,
+        "code": "<.code raised JSONDecodeError>",
+        "text": "<html><body>504 Gateway Time-out</body></html>"
+      },
+      "broker_orders_created": 0,
+      "broker_distinct_client_ids": 0,
+      "dup_policy": "reject_422 (HYPOTHETICAL)",
+      "recovery_by_client_id": {
+        "found": false,
+        "status_code": 404,
+        "code": 40410000
+      }
+    },
+    "S8_GET_lookup_504_always": {
+      "gets": 4,
+      "retry_sleeps_s": [
+        3,
+        3,
+        3
+      ],
+      "would_sleep_total_s": 9,
+      "sdk_outcome": {
+        "status_code": 504,
+        "code": 50410000
+      }
+    },
+    "S9_configurability": {
+      "TradingClient_effective": {
+        "retry": 3,
+        "retry_wait": 3,
+        "retry_codes": [
+          429,
+          504
+        ]
+      },
+      "TradingClient_accepts_retry_kwargs": false,
+      "TradingClient_retry_kwarg_error": "__init__() got an unexpected keyword argument 'retry_attempts'",
+      "RESTClient(retry_attempts=0)": {
+        "retry": 3,
+        "retry_codes": [
+          429,
+          504
+        ]
+      },
+      "RESTClient(retry_exception_codes=[])": {
+        "retry": 3,
+        "retry_codes": [
+          429,
+          504
+        ]
+      },
+      "RESTClient(retry_attempts=1)": {
+        "retry": 1,
+        "retry_codes": [
+          429,
+          504
+        ]
+      }
+    },
+    "S10_real_socket_no_response_no_timeout": {
+      "still_blocked_after_8s": true,
+      "outcome": "ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))",
+      "returned_after_s": 8.0,
+      "unblocked_only_after_server_closed": true
+    }
+  },
+  "network_block_verified": true,
+  "network_attempts_blocked": [
+    "('93.184.216.34', 443)"
+  ]
+}
