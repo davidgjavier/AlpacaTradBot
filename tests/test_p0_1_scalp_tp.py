@@ -241,3 +241,42 @@ class C_IncidentReproduction(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# D. Review follow-up (2026-09-23): the post-Target-1 "breakeven" stop must never
+#    be placed at or above the current bid. A stop above the market triggers at
+#    once (the mechanism of the 07:31Z incident, where a $86,719 stop sold the
+#    whole position immediately), and its limit (entry*1.005*0.995) can sit above
+#    a falling bid, leaving the triggered order unfilled and the position with no
+#    effective protection. Reachable when a partially filled TP terminates on a
+#    LATER cycle after price has dropped back below entry*SCALP_BREAKEVEN_MULT.
+# ---------------------------------------------------------------------------
+class D_BreakevenStopNeverAboveMarket(Base):
+    def _late_terminal_partial(self, bid, quote_available=True):
+        ns = H.load_bot(qty=0.8, bid=bid)
+        if not quote_available:
+            ns["get_live_quote"] = lambda: None
+        b = ns["_broker"]
+        b.add_order("tp1", "limit", 0.5, status="canceled", filled=0.2, avg=101.55)
+        b.add_order("s1", "stop_limit", 0.5, stop_price=STOP_PX, limit_price=98.3)
+        phase1(ns, tp_id="tp1")
+        H.cycle(ns)
+        return ns
+
+    def test_D1_bid_below_breakeven_keeps_prior_stop_below_market(self):
+        ns = self._late_terminal_partial(bid=100.2)          # breakeven would be 100.5
+        self.assertTrue(self.state(ns).get("target1_filled"))  # the 0.2 sale was real
+        self.assertStopsCover(ns, 0.8, max_price=100.2 - 1e-9)
+        self.assertAlmostEqual(self.state(ns)["stop_price"], STOP_PX)
+        self.assertNoOversubscription(ns)
+
+    def test_D2_bid_above_breakeven_still_uses_breakeven(self):
+        ns = self._late_terminal_partial(bid=101.6)
+        self.assertAlmostEqual(self.state(ns)["stop_price"], round(ENTRY * 1.005, 2))
+        self.assertStopsCover(ns, 0.8, max_price=101.6)
+
+    def test_D3_no_quote_does_not_guess_breakeven(self):
+        ns = self._late_terminal_partial(bid=100.2, quote_available=False)
+        self.assertAlmostEqual(self.state(ns)["stop_price"], STOP_PX)
+        self.assertStopsCover(ns, 0.8, max_price=100.2 - 1e-9)

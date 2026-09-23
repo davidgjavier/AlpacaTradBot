@@ -773,11 +773,26 @@ def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp
         db.clear_position_state(SYMBOL)
         return
     breakeven_price = round(entry * strategies.SCALP_BREAKEVEN_MULT, 2)
-    new_stop_id, new_stop_price = _submit_stop_limit_sell(remaining_qty, breakeven_price)
+    # Never rest a stop at/above the market: it would trigger at once, and its
+    # limit (stop * (1 - STOP_LIMIT_SLIPPAGE_PCT)) could sit above a falling
+    # bid, leaving the triggered order unfilled = no effective protection.
+    # If the bid is below breakeven, or unknown, keep the prior stop price (the
+    # floor that was already protecting this position); trailing raises it later.
+    quote = get_live_quote()
+    bid = quote[0] if quote else None
+    prior_stop = pos_state.get("stop_price")
+    if bid is not None and breakeven_price < bid:
+        target_stop = breakeven_price
+    else:
+        target_stop = prior_stop if prior_stop else breakeven_price
+        log(f"[STRATEGY: SCALP]  Breakeven ${breakeven_price:.2f} is not below the "
+            f"{'current bid $' + format(bid, '.2f') if bid is not None else 'unavailable bid'} — "
+            f"keeping prior stop ${target_stop:.2f} instead of placing a stop above the market.")
+    new_stop_id, new_stop_price = _submit_stop_limit_sell(remaining_qty, target_stop)
     db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=new_stop_id, stop_price=new_stop_price,
                            entry_time=entry_time, peak_price=peak, take_profit_order_id=None, take_profit_price=None,
                            entry_strategy="SCALP", target1_filled=True, original_qty=pos_state.get("original_qty"))
-    log(f"[STRATEGY: SCALP] Remaining {remaining_qty:.6f} BTC stop moved to ${new_stop_price} (SCALP_BREAKEVEN_MULT) — now trailing.")
+    log(f"[STRATEGY: SCALP] Remaining {remaining_qty:.6f} BTC stop set to ${new_stop_price} — now trailing.")
 
 
 def _scalp_execute_target1(pos_state, entry, entry_time, peak, stop_id, stop_price, current_qty, tp_qty, tp_price, original_qty):
