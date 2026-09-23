@@ -1,0 +1,652 @@
+test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) ... test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) ... test_invalid_timestamps_block (test_draft_d10_hardening.A_SnapshotValidation) ... test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) ... test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) ... test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) ... test_valid_snapshot_ok (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_freshness (test_draft_d10_hardening.B_ApplyTimeGate) ... ERROR
+test_incomplete_live_read_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ERROR
+test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) ... test_matching_fresh_live_state_passes (test_draft_d10_hardening.B_ApplyTimeGate) ... ERROR
+test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... test_snapshot_identity_must_match_expected_too (test_draft_d10_hardening.B_ApplyTimeGate) ... ERROR
+test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... 
+======================================================================
+ERROR: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [not dict]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 64, in verdict
+    return m().check(s, d, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 67, in check
+    buys = [f for f in snapshot.get("fills") or [] if f.get("side") == "buy" and day_start and _t(f["time"]) >= day_start]
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 67, in <listcomp>
+    buys = [f for f in snapshot.get("fills") or [] if f.get("side") == "buy" and day_start and _t(f["time"]) >= day_start]
+AttributeError: 'int' object has no attribute 'get'
+
+======================================================================
+ERROR: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [not dict]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 64, in verdict
+    return m().check(s, d, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 60, in check
+    st = str(o.get("status"))
+AttributeError: 'str' object has no attribute 'get'
+
+======================================================================
+ERROR: test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) [fills not list]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 81, in test_missing_or_malformed_lists_block
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 64, in verdict
+    return m().check(s, d, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 67, in check
+    buys = [f for f in snapshot.get("fills") or [] if f.get("side") == "buy" and day_start and _t(f["time"]) >= day_start]
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 67, in <listcomp>
+    buys = [f for f in snapshot.get("fills") or [] if f.get("side") == "buy" and day_start and _t(f["time"]) >= day_start]
+AttributeError: 'str' object has no attribute 'get'
+
+======================================================================
+ERROR: test_freshness (test_draft_d10_hardening.B_ApplyTimeGate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 160, in test_freshness
+    self.assertFalse(self.gate(lambda lv: lv.update(read_at="2026-09-23T17:00:00+00:00"))[0])   # stale / before snapshot
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_incomplete_live_read_refused (test_draft_d10_hardening.B_ApplyTimeGate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 172, in test_incomplete_live_read_refused
+    self.assertFalse(self.gate(lambda lv: lv.update(complete=False))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) (qty=nan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 146, in test_invalid_live_quantities_refused_even_if_equal
+    self.assertFalse(m().live_gate(s, live_from(s), e)[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) (qty=inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 146, in test_invalid_live_quantities_refused_even_if_equal
+    self.assertFalse(m().live_gate(s, live_from(s), e)[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) (qty=-0.1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 146, in test_invalid_live_quantities_refused_even_if_equal
+    self.assertFalse(m().live_gate(s, live_from(s), e)[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) (qty=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 146, in test_invalid_live_quantities_refused_even_if_equal
+    self.assertFalse(m().live_gate(s, live_from(s), e)[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_matching_fresh_live_state_passes (test_draft_d10_hardening.B_ApplyTimeGate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 138, in test_matching_fresh_live_state_passes
+    ok, why = self.gate()
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [status]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [filled_qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [side]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [client_order_id]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [limit_price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) [type]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 169, in test_same_order_id_with_changed_details_refused
+    self.assertFalse(self.gate(lambda lv: lv["open_orders"][0].update({field: val}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_snapshot_identity_must_match_expected_too (test_draft_d10_hardening.B_ApplyTimeGate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 157, in test_snapshot_identity_must_match_expected_too
+    self.assertFalse(m().live_gate(s, lv, e)[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) [account_key]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 151, in test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused
+    self.assertFalse(self.gate(lambda lv: lv.update({k: v}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) [environment]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 151, in test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused
+    self.assertFalse(self.gate(lambda lv: lv.update({k: v}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+ERROR: test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) [symbol]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 151, in test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused
+    self.assertFalse(self.gate(lambda lv: lv.update({k: v}))[0])
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 135, in gate
+    return m().live_gate(s, lv, e)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/drafts/d10_snapshot_check.py", line 87, in live_gate
+    if abs(float(live_qty) - float(snapshot.get("position_qty") or 0)) > 1e-9:
+TypeError: float() argument must be a string or a number, not 'dict'
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [missing]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [orders has_more]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [fills has_more]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [pages missing]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [pages bool]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [covers_from after day start]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [covers_to before taken_at]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) [fills_since only (schema 1)]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 123, in test_completeness_evidence_required
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=nan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=-inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=-0.1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) (qty=False)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 73, in test_invalid_position_quantities_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(position_qty=v))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_invalid_timestamps_block (test_draft_d10_hardening.A_SnapshotValidation) [naive]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 89, in test_invalid_timestamps_block
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [neg qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [nan price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [bad time]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [naive time]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [bad side]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [symbol]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [no order id]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) [outside coverage]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 108, in test_malformed_fills_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(fills=[f_]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [no id]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'FLAGS' != 'BLOCK'
+- FLAGS
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [empty id]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'FLAGS' != 'BLOCK'
+- FLAGS
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [bad side]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [nan qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [bool qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [zero qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [neg filled]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [filled>qty]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [symbol]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) [nan price]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 99, in test_malformed_orders_block
+    self.assertEqual(self.verdict(lambda s, d, e: s.update(open_orders=[o]))["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) [no open_orders]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 81, in test_missing_or_malformed_lists_block
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) [no fills]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 81, in test_missing_or_malformed_lists_block
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+======================================================================
+FAIL: test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) [orders not list]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_d10_hardening.py", line 81, in test_missing_or_malformed_lists_block
+    self.assertEqual(self.verdict(f)["verdict"], "BLOCK")
+AssertionError: 'OK_FOR_REVIEW' != 'BLOCK'
+- OK_FOR_REVIEW
++ BLOCK
+
+
+----------------------------------------------------------------------
+Ran 14 tests in 0.011s
+
+FAILED (failures=36, errors=21)

@@ -1,0 +1,2 @@
+7f0adb6b4723c7b4d0f20f275531ed0888356d3aae08f601fd713e6d55a088e3  review/drafts/crypto_trading_bot_R1v2.py
+cceb3854ab5fb666d1570391ad016a6cf5ff0ac4e7f97c8e799b2ec56ffa6d14  review/drafts/d10_snapshot_check.py

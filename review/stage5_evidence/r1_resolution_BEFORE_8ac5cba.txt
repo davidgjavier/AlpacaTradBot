@@ -1,0 +1,238 @@
+test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) ... test_not_placed_is_rejected_if_the_broker_now_shows_the_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... FAIL
+test_not_placed_is_rejected_if_the_position_decreased (test_draft_r1v2_resolution.C_BindingAndVerification) ... FAIL
+test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... test_valid_found_reconciles_the_real_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes (test_draft_r1v2_resolution.D_EndToEndCounterexample) ... FAIL
+test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ERROR
+test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... FAIL
+
+======================================================================
+ERROR: test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 183, in test_authorization_is_exactly_once_and_cannot_be_reused
+    put(ns, bound(pending(ns), "not_placed", "n-1"))
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 53, in bound
+    r = {"schema": 2, "kind": kind, "attempt": liq.get("attempt"), "cid": liq.get("client_order_id"),
+AttributeError: 'NoneType' object has no attribute 'get'
+
+======================================================================
+FAIL: test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (attempt=True)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 108, in test_boolean_or_mismatched_attempt_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (attempt=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 108, in test_boolean_or_mismatched_attempt_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (attempt='1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 108, in test_boolean_or_mismatched_attempt_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) [wrong symbol]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 123, in test_found_requires_matching_client_id_symbol_and_side
+    self.assertEqual(len(market_submissions(b)), 1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) [buy side]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 123, in test_found_requires_matching_client_id_symbol_and_side
+    self.assertEqual(len(market_submissions(b)), 1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_not_placed_is_rejected_if_the_broker_now_shows_the_order (test_draft_r1v2_resolution.C_BindingAndVerification)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 147, in test_not_placed_is_rejected_if_the_broker_now_shows_the_order
+    self.assertEqual(len(market_submissions(b)), 1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_not_placed_is_rejected_if_the_position_decreased (test_draft_r1v2_resolution.C_BindingAndVerification)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 155, in test_not_placed_is_rejected_if_the_position_decreased
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.3[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.3, side='sell', status=namespace(value='filled'), filled_qty='0.3', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.3,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.3',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (missing='attempt')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 98, in test_unbound_resolution_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (missing='escalation_id')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 98, in test_unbound_resolution_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (missing='nonce')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 98, in test_unbound_resolution_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) (missing='schema')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 98, in test_unbound_resolution_is_rejected
+    self.assertEqual(sells_at_broker(ns["_broker"]), [])
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[129 chars]-2')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='filled'), filled_qty='0.5', filled_avg_price='100.0', client_order_id='liq-20260923T194319-2')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='filled'),
+-            filled_qty='0.5',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T194319-2')]
+
+======================================================================
+FAIL: test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes (test_draft_r1v2_resolution.D_EndToEndCounterexample)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 81, in test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes
+    self.assertEqual(len(market_submissions(b)), 1, "a second sell was submitted")
+AssertionError: 2 != 1 : a second sell was submitted
+
+======================================================================
+FAIL: test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 224, in test_rejected_resolution_stays_rejected_and_history_is_preserved
+    self.assertNotIn("operator_resolution", liq, "rejected record left in the active slot")
+AssertionError: 'operator_resolution' unexpectedly found in {'reason': 'circuit breaker (P/L $-1000000000.00)', 'day_stamp': '2026-09-23', 'attempt': 1, 'order_id': None, 'client_order_id': 'liq-20260923T194319-1', 'started': '20260923T194319', 'last_confirmed_qty': 0.5, 'inflight': {'cid': 'liq-20260923T194319-1', 'since': 0.0, 'checks': 5, 'origin': 'submit', 'kinds': {'NOT_FOUND_BY_CID': 5}, 'last_kind': 'NOT_FOUND_BY_CID'}, 'escalated': {'cid': 'liq-20260923T194319-1', 'order_id': None, 'kind': 'NOT_FOUND_BY_CID', 'checks': 3, 'waited_s': 900.0, 'at': '2026-09-23T19:43:19.659167+00:00'}, 'operator_resolution': {'schema': 2, 'kind': 'not_placed', 'attempt': 1, 'cid': 'liq-20260923T194319-1', 'escalation_id': None, 'nonce': 'n-bad', 'evidence': '', 'by': 'David', 'rejected': '2026-09-23T19:43:19.659231+00:00: invalid (needs kind=found+order_id+by, or kind=not_placed+matching cid+evidence+by)'}} : rejected record left in the active slot
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.333s
+
+FAILED (failures=13, errors=1)
