@@ -28,8 +28,9 @@ class Proposed(unittest.TestCase):
         self.assertEqual([o for o in b.orders.values() if o.kind == "market"], [], "automatic resubmit")
         self.assertTrue(pending(ns).get("escalated"))
         liq = dict(pending(ns))
-        liq["operator_resolution"] = {"kind": "not_placed", "cid": liq["client_order_id"],
-                                      "evidence": "broker history export", "by": "David"}
+        liq["operator_resolution"] = {"schema": 2, "kind": "not_placed", "attempt": liq["attempt"],
+                                      "cid": liq["client_order_id"], "escalation_id": liq["escalated"]["id"],
+                                      "nonce": "repl-1", "evidence": "broker history export", "by": "David"}
         ns["db"].liquidations[SYM] = liq
         H.cycle(ns)
         self.assertEqual(len([o for o in b.orders.values() if o.kind == "market"]), 1)

@@ -205,6 +205,7 @@ class E_ReplayCrashRejection(unittest.TestCase):
         except Crash:
             pass
         db.set_liquidation_state = orig
+        self.assertTrue(getattr(db, "_crashed", False), "the crash was not exercised (test would be vacuous)")
         n2 = restart(ns)
         n2["_r1_now"] = lambda: 1100.0
         H.cycle(n2)

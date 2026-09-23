@@ -1,0 +1,2 @@
+03906a67456c5691208b2038d1d362efece8cc3c6b493dbd780c86a7465066df  review/drafts/crypto_trading_bot_R1v2.py
+8a43c8bc08b2ff87279dae5734dfcfd657de5b5d4172a1f6ac169d00d6f822eb  review/drafts/d10_snapshot_check.py

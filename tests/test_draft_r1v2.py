@@ -173,9 +173,10 @@ class G4_OperatorRecovery(unittest.TestCase):
     def test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt(self):
         ns, T = self.escalated_never_sent()
         liq = dict(pending(ns))
-        liq["operator_resolution"] = {"kind": "not_placed", "cid": liq["client_order_id"],
-                                      "evidence": "broker order history export 2026-09-23T12:00Z, no such cid",
-                                      "by": "David"}
+        liq["operator_resolution"] = {"schema": 2, "kind": "not_placed", "attempt": liq["attempt"],
+                                      "cid": liq["client_order_id"], "escalation_id": liq["escalated"]["id"],
+                                      "nonce": "g4-1", "evidence": "broker order history export, no such cid",
+                                      "by": "David"}          # MIGRATED to bound schema 2 (Stage 5f)
         ns["db"].liquidations[SYM] = liq
         step(ns, T, 1000.0)
         b = ns["_broker"]
@@ -186,10 +187,12 @@ class G4_OperatorRecovery(unittest.TestCase):
     def test_invalid_resolution_is_rejected_and_nothing_is_sold(self):
         ns, T = self.escalated_never_sent()
         liq = dict(pending(ns))
-        liq["operator_resolution"] = {"kind": "not_placed", "cid": liq["client_order_id"], "by": "David"}  # no evidence
+        liq["operator_resolution"] = {"schema": 2, "kind": "not_placed", "attempt": liq["attempt"],
+                                      "cid": liq["client_order_id"], "escalation_id": liq["escalated"]["id"],
+                                      "nonce": "g4-2", "by": "David"}  # no evidence (MIGRATED to schema 2)
         ns["db"].liquidations[SYM] = liq
         liq = step(ns, T, 1000.0)
-        self.assertIn("rejected", liq["operator_resolution"])
+        self.assertTrue(liq["resolution_history"][-1]["outcome"].startswith("rejected"))   # MIGRATED: consumed to history
         self.assertTrue(liq.get("escalated"))
         self.assertEqual([o for o in ns["_broker"].orders.values() if o.kind == "market"], [])
 
@@ -197,9 +200,12 @@ class G4_OperatorRecovery(unittest.TestCase):
         ns, T = invisible_attempt()
         for t in (10.0, 20.0, 900.0):
             step(ns, T, t)
-        oid = next(o.id for o in ns["_broker"].orders.values() if o.kind == "market")
+        o_ = next(o for o in ns["_broker"].orders.values() if o.kind == "market")
+        o_.symbol, oid = "BTC/USD", o_.id                   # MIGRATED: found is verified against broker details
         liq = dict(pending(ns))
-        liq["operator_resolution"] = {"kind": "found", "order_id": oid, "by": "David"}
+        liq["operator_resolution"] = {"schema": 2, "kind": "found", "order_id": oid, "attempt": liq["attempt"],
+                                      "cid": liq["client_order_id"], "escalation_id": liq["escalated"]["id"],
+                                      "nonce": "g4-3", "evidence": "broker UI order detail", "by": "David"}
         ns["db"].liquidations[SYM] = liq
         ns["_broker"].reveal(fill=True)
         step(ns, T, 1000.0)
@@ -215,13 +221,18 @@ def _d10():
 
 
 def good():
-    snap = {"taken_at": "2026-09-23T18:00:00Z", "environment": "paper", "account_key": "paper:abc123", "symbol": "BTC/USD",
-            "position_qty": 0.3, "open_orders": [{"id": "s9", "client_order_id": None, "side": "sell", "status": "new",
-                                                   "qty": 0.3, "filled_qty": 0, "type": "stop_limit"}],
-            "fills_since": "2026-09-23T00:00:00Z",
-            "fills": [{"order_id": "o1", "client_order_id": "x", "side": "sell", "qty": 0.2, "price": 1, "time": "2026-09-23T15:00:00Z"}]}
+    """MIGRATED to D10 schema 2 (Stage 5f): explicit completeness attestation, tz-aware times, full order/fill fields."""
+    snap = {"schema": 2, "taken_at": "2026-09-23T18:00:00+00:00", "environment": "paper", "account_key": "paper:abc123",
+            "symbol": "BTC/USD", "position_qty": 0.3,
+            "open_orders": [{"id": "s9", "client_order_id": None, "symbol": "BTC/USD", "side": "sell", "status": "new",
+                             "qty": 0.3, "filled_qty": 0.0, "type": "stop_limit"}],
+            "fills": [{"order_id": "o1", "client_order_id": "x", "symbol": "BTC/USD", "side": "sell", "qty": 0.2,
+                       "price": 1.0, "time": "2026-09-23T15:00:00+00:00"}],
+            "completeness": {"orders": {"has_more": False, "pages": 1},
+                             "fills": {"has_more": False, "pages": 1, "covers_from": "2026-09-23T00:00:00+00:00",
+                                       "covers_to": "2026-09-23T18:00:00+00:00"}}}
     db = {"breaker_tripped_stamp": "2026-09-23", "position_state": {"stop_order_id": "s9"}, "liquidation_state": {}}
-    exp = {"environment": "paper", "account_key": "paper:abc123", "symbol": "BTC/USD", "now": "2026-09-23T18:05:00Z",
+    exp = {"environment": "paper", "account_key": "paper:abc123", "symbol": "BTC/USD", "now": "2026-09-23T18:05:00+00:00",
            "max_age_s": 600}
     return snap, db, exp
 
@@ -238,9 +249,9 @@ class G5_D10Snapshot(unittest.TestCase):
             "environment": lambda s, d, e: s.update(environment="live"),
             "account": lambda s, d, e: s.update(account_key="paper:other"),
             "symbol": lambda s, d, e: s.update(symbol="ETH/USD"),
-            "stale": lambda s, d, e: e.update(now="2026-09-23T19:00:00Z"),
-            "future": lambda s, d, e: s.update(taken_at="2026-09-23T18:10:00Z"),
-            "fills incomplete": lambda s, d, e: s.update(fills_since="2026-09-23T12:00:00Z"),
+            "stale": lambda s, d, e: e.update(now="2026-09-23T19:00:00+00:00"),
+            "future": lambda s, d, e: s.update(taken_at="2026-09-23T18:10:00+00:00"),
+            "fills incomplete": lambda s, d, e: s["completeness"]["fills"].update(covers_from="2026-09-23T12:00:00+00:00"),
             "qty unknown": lambda s, d, e: s.update(position_qty=None),
             "unknown status": lambda s, d, e: s["open_orders"][0].update(status="weird"),
             "terminal listed open": lambda s, d, e: s["open_orders"][0].update(status="filled"),
@@ -253,10 +264,10 @@ class G5_D10Snapshot(unittest.TestCase):
 
     def test_flags_unrecognized_orders_reentry_and_unseen_attempt(self):
         snap, db, exp = good()
-        snap["open_orders"].append({"id": "zz", "client_order_id": "manual", "side": "sell", "status": "new",
-                                    "qty": 0.1, "filled_qty": 0, "type": "limit"})
-        snap["fills"].append({"order_id": "b1", "client_order_id": None, "side": "buy", "qty": 0.1, "price": 1,
-                              "time": "2026-09-23T17:00:00Z"})
+        snap["open_orders"].append({"id": "zz", "client_order_id": "manual", "symbol": "BTC/USD", "side": "sell",
+                                    "status": "new", "qty": 0.1, "filled_qty": 0.0, "type": "limit"})
+        snap["fills"].append({"order_id": "b1", "client_order_id": None, "symbol": "BTC/USD", "side": "buy", "qty": 0.1,
+                              "price": 1.0, "time": "2026-09-23T17:00:00+00:00"})
         db["liquidation_state"] = {"client_order_id": "liq-1"}
         r = _d10().check(snap, db, exp)
         self.assertEqual(r["verdict"], "FLAGS")
@@ -266,12 +277,16 @@ class G5_D10Snapshot(unittest.TestCase):
         self.assertIn("NOT proof it was never placed", text)
 
     def test_live_gate(self):
+        """MIGRATED to live_gate(snapshot, live, expected): identity + freshness + full order details."""
         m = _d10()
-        snap = good()[0]
-        self.assertTrue(m.live_gate(snap, 0.3, ["s9"])[0])
-        self.assertFalse(m.live_gate(snap, 0.29, ["s9"])[0])
-        self.assertFalse(m.live_gate(snap, 0.3, ["s9", "new"])[0])
-        self.assertFalse(m.live_gate(snap, None, ["s9"])[0])
+        snap, db, exp = good()
+        live = {"environment": "paper", "account_key": "paper:abc123", "symbol": "BTC/USD",
+                "read_at": "2026-09-23T18:04:30+00:00", "position_qty": 0.3,
+                "open_orders": [dict(o) for o in snap["open_orders"]], "complete": True}
+        self.assertTrue(m.live_gate(snap, live, exp)[0])
+        self.assertFalse(m.live_gate(snap, dict(live, position_qty=0.29), exp)[0])
+        self.assertFalse(m.live_gate(snap, dict(live, open_orders=live["open_orders"] + [dict(snap["open_orders"][0], id="new")]), exp)[0])
+        self.assertFalse(m.live_gate(snap, dict(live, position_qty=None), exp)[0])
 
 
 if __name__ == "__main__":

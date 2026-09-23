@@ -1,0 +1,15 @@
+test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_broker_now_shows_the_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_position_decreased (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_valid_found_reconciles_the_real_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes (test_draft_r1v2_resolution.D_EndToEndCounterexample) ... ok
+test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.350s
+
+OK

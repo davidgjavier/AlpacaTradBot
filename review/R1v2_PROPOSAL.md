@@ -2,7 +2,7 @@
 
 **Status:** DRAFT for independent (Gemini) review. **Not adopted.** Committed bot unchanged.
 
-**Version:** R1 v2 (supersedes R1 v1 in `review/drafts/crypto_trading_bot_R1.py`).
+**Version:** R1 **v2.1** (Stage 5f hardening after Codex's review of 8ac5cba; supersedes v2 and v1). See §9 for what changed.
 
 **Artifacts:**
 - `review/drafts/crypto_trading_bot_R1v2.py` and `R1v2.patch`: diff against the committed bot.
@@ -121,3 +121,69 @@ An offline script **cannot establish current broker truth**. The check validates
 2. Should UNKNOWN (transport failure) share the NOT_FOUND bound, or escalate differently?
 3. Is the `not_placed` evidence requirement sufficient, and what exactly must the evidence contain?
 4. Are the D10 BLOCK conditions complete (e.g. partially filled open orders, fees, dust)?
+
+
+## 9. v2.1 changes (Stage 5f) — after Codex's review of 8ac5cba
+
+**Reproduced on the v2 draft by the tests:**
+
+| Finding | Type | v2 | v2.1 |
+|---|---|---|---|
+| `found` pointing at an unrelated terminal order, original sell hidden | **END-TO-END failure** | **second sell submitted** | no sell, no completion |
+| D10 accepts NaN, ±inf, negative, boolean qty | validation weakness | accepted | BLOCK |
+| D10 accepts missing `open_orders`/`fills`, naive timestamps, malformed orders/fills, no completeness evidence | validation weakness | accepted | BLOCK |
+| `live_gate` checks only qty + id set | validation weakness | wrong account/env/symbol, changed order details, stale reads all accepted | refused |
+| Unbound, stale, replayed, boolean-attempt resolutions; rejected records left active | validation weakness | accepted / left active | rejected, consumed to history |
+
+**Operator resolution, schema 2** (bound, consumed exactly once):
+```
+{"schema": 2, "kind": "found"|"not_placed", "attempt": <int == pending attempt>,
+ "cid": <== pending client id>, "escalation_id": <== CURRENT escalation id>, "nonce": <unused>,
+ "evidence": <non-empty>, "by": <non-empty>, "order_id": <found only>}
+```
+- Accepted only while the attempt is **escalated**. Every record moves to `resolution_history` as applied
+  or rejected, and the active slot is cleared, so it is never re-evaluated.
+- **Nonces are single-use.**
+- A `not_placed` authorizes **exactly the next attempt number** (`authorized_attempt`). That
+  authorization is consumed when the next intent is written, so it can't be reused by a later attempt
+  (tested).
+- **`found`:** the broker order fetched by id must have `client_order_id` == the pending cid, the same
+  symbol, and side sell. **Assumption:** an order fetchable through this account's client belongs to this
+  account; the order object carries no account id.
+- **`not_placed`:** checked **freshly** at apply time. The client-id lookup must be a structured
+  NOT_FOUND, the cid absent from open orders, and the position not reduced since the attempt. If any
+  lookup is UNKNOWN, the record isn't consumed; it's retried next cycle.
+- **Crash after applying:** exactly one new attempt (tested; the crash is asserted to fire).
+- **Authentication:** `by`/`evidence` are **not** authentication. Records are assertions; the bot
+  verifies what the broker can confirm. `not_placed` remains a **trust decision**, because absence can't
+  be proven. **The writer tool does not exist and must not be built** until identity/authentication and
+  stale-record protection are separately reviewed.
+
+**D10 schema 2:**
+- strict types, with finite non-boolean quantities;
+- tz-aware timestamps;
+- required lists, with every order and fill validated, including symbol;
+- an explicit completeness attestation (`has_more: false`, integer pages, fill coverage from ≤ breaker-day
+  start to ≥ `taken_at`), with every fill inside that window.
+
+The completeness block is an **attestation**: it is checked for presence and consistency, not proof that
+pagination really happened.
+
+**`live_gate(snapshot, live, expected)`:**
+- re-validates the snapshot, and requires the live read to be attested complete;
+- account, environment and symbol must match **both** the expected configuration and the snapshot;
+- the live read must be no older than the snapshot, not in the future, and ≤ 60 s old;
+- quantities must be valid and equal, and **every authoritative order field** must be identical.
+
+**Remaining gap, stated:** the gate and the action that follows are **not atomic**.
+
+**Remaining risks and untested possibilities:**
+- Wrong-but-plausible operator input: a `not_placed` for an attempt the broker simply hasn't surfaced
+  yet, which passes all fresh checks, still produces a second sell. **Untested possibility; inherent in
+  the trust decision.**
+- A position reduced by an unrelated process makes `not_placed` fail closed (liveness cost).
+- Account binding of `found` relies on the client being bound to one account. D7 defines the account
+  key.
+- An attested-but-false completeness block would pass.
+- Clock jumps affect escalation timing.
+- Unchanged: no bound on exposure duration or loss while waiting (D8).

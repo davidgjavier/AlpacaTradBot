@@ -1,0 +1,47 @@
+test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_timestamps_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_valid_snapshot_ok (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_freshness (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_incomplete_live_read_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_matching_fresh_live_state_passes (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_snapshot_identity_must_match_expected_too (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_attempt_without_any_identity_escalates_immediately_without_selling (test_draft_r1v2.G1_MissingMetadata) ... ok
+test_pending_record_without_inflight_is_reconstructed_conservatively (test_draft_r1v2.G1_MissingMetadata) ... ok
+test_not_found_by_order_id_escalates_at_bound (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_unknown_lookup_escalates_at_bound_and_never_resubmits (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_visible_working_order_never_escalates (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_broker_visibility_after_escalation_resolves_with_history (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_restart_after_escalation_keeps_it_without_resubmit_or_entry (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_three_checks_exactly_at_window_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_three_checks_just_before_window_do_not_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_two_checks_at_window_do_not_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_found_resolution_reconciles_the_named_order (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_invalid_resolution_is_rejected_and_nothing_is_sold (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_clean_snapshot_is_ok_for_review_and_detects_condition (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_each_blocking_reason (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_flags_unrecognized_orders_reentry_and_unseen_attempt (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_live_gate (test_draft_r1v2.G5_D10Snapshot)
+MIGRATED to live_gate(snapshot, live, expected): identity + freshness + full order details. ... ok
+test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_broker_now_shows_the_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_position_decreased (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_valid_found_reconciles_the_real_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes (test_draft_r1v2_resolution.D_EndToEndCounterexample) ... ok
+test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+
+----------------------------------------------------------------------
+Ran 41 tests in 0.696s
+
+OK

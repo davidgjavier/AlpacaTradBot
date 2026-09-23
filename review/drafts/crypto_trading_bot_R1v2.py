@@ -776,7 +776,7 @@ def flatten_position(qty, stop_order_id, reason):
 # order without a confirmed quantity is what this stage forbids; choosing a different
 # unknown-quantity policy is pending decision D8.
 LIQ_FLAT_BTC = 0.0001
-# ---- DRAFT R1 v2 (for review; NOT adopted) -------------------------------------------
+# ---- DRAFT R1 v2.1 (for review; NOT adopted) -------------------------------------------
 # Own-attempt outcome matrix:
 #   OPEN (visible, working)            -> wait; never escalates via R1 (long-working orders: D8 alerting)
 #   FILLED / TERMINAL                  -> resolved; an open escalation is closed "resolved_by=broker"
@@ -806,29 +806,112 @@ def _r1_close_escalation(liq, how):
         liq.pop("escalated", None)
 
 
+def _r1_sym(x):
+    return str(x or "").replace("/", "").upper()
+
+
+def _r1_consume(liq, res, outcome):
+    """Move the active resolution into history exactly once (applied or rejected); the active slot is cleared."""
+    hist = liq.get("resolution_history") or []
+    hist.append({"record": dict(res), "outcome": outcome, "at": datetime.now(timezone.utc).isoformat()})
+    liq["resolution_history"] = hist
+    liq.pop("operator_resolution", None)
+
+
 def _r1_apply_operator_resolution(liq):
-    """Returns (ok_to_continue, message). Validated; never deletes records; never clears the breaker stamp."""
+    """DRAFT v2.1. Returns (ok_to_continue, message).
+    A resolution is an ASSERTION (by/evidence strings are not authentication). It must be bound to the exact pending
+    attempt: schema 2, integer attempt == pending attempt, cid == pending client id, escalation_id == the CURRENT
+    escalation, and an unused nonce. It is consumed exactly once (history), never re-evaluated, never reusable.
+    found:      broker order fetched by id must have client_order_id == pending cid, same symbol, side sell.
+    not_placed: fresh broker checks: cid lookup is a structured NOT_FOUND, cid absent from open orders, and the
+                position has not decreased since the attempt; then EXACTLY the next attempt number is authorized.
+    Unverifiable (lookup/position UNKNOWN) -> retried next cycle, not consumed. The writer tool does not exist."""
     res = liq.get("operator_resolution")
-    if not res or res.get("applied") or res.get("rejected"):
+    if not res:
         return True, None
-    now_iso = datetime.now(timezone.utc).isoformat()
-    kind = res.get("kind")
-    if kind == "found" and res.get("order_id") and res.get("by"):
+    if not isinstance(res, dict):
+        _r1_consume(liq, {"raw": repr(res)[:200]}, "rejected: not an object")
+        return False, "operator resolution REJECTED: not an object"
+    esc = liq.get("escalated") or {}
+    used = {h.get("record", {}).get("nonce") for h in liq.get("resolution_history") or []}
+    att = res.get("attempt")
+    why = []
+    if res.get("schema") != 2:
+        why.append("schema != 2")
+    if res.get("kind") not in ("found", "not_placed"):
+        why.append("kind invalid")
+    if isinstance(att, bool) or not isinstance(att, int) or att != liq.get("attempt"):
+        why.append("attempt does not match the pending attempt")
+    if not res.get("cid") or res.get("cid") != liq.get("client_order_id"):
+        why.append("cid does not match the pending attempt")
+    if not esc.get("id") or res.get("escalation_id") != esc.get("id"):
+        why.append("escalation_id does not match the current escalation")
+    if not isinstance(res.get("nonce"), str) or not res.get("nonce"):
+        why.append("nonce missing")
+    elif res.get("nonce") in used:
+        why.append("nonce already consumed (replay)")
+    if not isinstance(res.get("evidence"), str) or not res.get("evidence").strip():
+        why.append("evidence missing")
+    if not isinstance(res.get("by"), str) or not res.get("by").strip():
+        why.append("by missing")
+    if res.get("kind") == "found" and (not isinstance(res.get("order_id"), str) or not res.get("order_id")):
+        why.append("order_id missing")
+    if why:
+        _r1_consume(liq, res, "rejected: " + "; ".join(why))
+        return False, "operator resolution REJECTED: " + "; ".join(why)
+    cid = liq.get("client_order_id")
+    if res["kind"] == "found":
+        try:
+            o = trading_client.get_order_by_id(res["order_id"])
+        except Exception as e:
+            if _is_not_found(e):
+                _r1_consume(liq, res, "rejected: order_id not found at broker")
+                return False, "operator resolution REJECTED: order_id not found at broker"
+            return False, f"operator resolution NOT YET VERIFIABLE (order lookup failed: {e}); retrying next cycle"
+        side = o.side.value if hasattr(getattr(o, "side", None), "value") else str(getattr(o, "side", ""))
+        bad = []
+        if getattr(o, "client_order_id", None) != cid:
+            bad.append("broker order client_order_id != pending cid")
+        if _r1_sym(getattr(o, "symbol", None)) != _r1_sym(SYMBOL):
+            bad.append("broker order symbol mismatch")
+        if side != "sell":
+            bad.append("broker order is not a sell")
+        if bad:
+            _r1_consume(liq, res, "rejected: " + "; ".join(bad))
+            return False, "operator resolution REJECTED: " + "; ".join(bad)
         liq["order_id"] = str(res["order_id"])
-        res["applied"] = now_iso
-        return True, f"operator resolution FOUND applied: reconciling order {res['order_id']}"
-    if (kind == "not_placed" and res.get("cid") and res.get("cid") == liq.get("client_order_id")
-            and res.get("evidence") and res.get("by")):
-        ab = liq.get("abandoned_attempts") or []
-        ab.append({"cid": res["cid"], "evidence": res["evidence"], "by": res["by"], "at": now_iso})
-        liq["abandoned_attempts"] = ab
-        _r1_close_escalation(liq, "operator_not_placed")
-        liq.update(client_order_id=None, order_id=None)
-        liq.pop("inflight", None)
-        res["applied"] = now_iso
-        return True, f"operator resolution NOT_PLACED applied for {res['cid']}: ONE new attempt is authorized"
-    res["rejected"] = f"{now_iso}: invalid (needs kind=found+order_id+by, or kind=not_placed+matching cid+evidence+by)"
-    return False, "operator resolution REJECTED: " + res["rejected"]
+        _r1_consume(liq, res, "applied")
+        return True, f"operator resolution FOUND verified and applied: reconciling order {res['order_id']}"
+    # not_placed: fresh broker evidence must not contradict it
+    fs = get_order_fill_state("cid:" + cid)
+    if fs["state"] == "UNKNOWN":
+        return False, "operator resolution NOT YET VERIFIABLE (client-id lookup UNKNOWN); retrying next cycle"
+    if fs["state"] != "NOT_FOUND":
+        _r1_consume(liq, res, f"rejected: broker now reports the attempt ({fs['state']})")
+        return False, f"operator resolution REJECTED: broker now reports the attempt ({fs['state']})"
+    opens = _open_sell_orders_strict()
+    if opens is None:
+        return False, "operator resolution NOT YET VERIFIABLE (open orders UNKNOWN); retrying next cycle"
+    if any(getattr(o, "client_order_id", None) == cid for o in opens):
+        _r1_consume(liq, res, "rejected: attempt present in open orders")
+        return False, "operator resolution REJECTED: attempt present in open orders"
+    q = _position_qty_strict()
+    if q is None:
+        return False, "operator resolution NOT YET VERIFIABLE (position UNKNOWN); retrying next cycle"
+    last = liq.get("last_confirmed_qty")
+    if last is None or q < float(last) - LIQ_FLAT_BTC:
+        _r1_consume(liq, res, f"rejected: position {q} decreased from {last} (the attempt may have executed)")
+        return False, f"operator resolution REJECTED: position decreased ({last} -> {q})"
+    ab = liq.get("abandoned_attempts") or []
+    ab.append({"cid": cid, "attempt": liq.get("attempt"), "evidence": res["evidence"], "by": res["by"],
+               "nonce": res["nonce"], "at": datetime.now(timezone.utc).isoformat()})
+    liq["abandoned_attempts"] = ab
+    _r1_close_escalation(liq, "operator_not_placed")
+    liq.update(client_order_id=None, order_id=None, authorized_attempt=int(liq.get("attempt") or 0) + 1)
+    liq.pop("inflight", None)
+    _r1_consume(liq, res, "applied")
+    return True, f"operator resolution NOT_PLACED verified and applied for {cid}: attempt {liq['authorized_attempt']} authorized once"
 
 
 def _r1_unresolved(liq, kind):
@@ -847,8 +930,9 @@ def _r1_unresolved(liq, kind):
         log(f"  Liquidation attempt {cid} still ESCALATED ({kind}); no resubmit, no completion — awaiting broker "
             "visibility or a validated operator resolution.")
     elif u["checks"] >= R1_MIN_CHECKS and waited >= R1_WINDOW_S:
-        liq["escalated"] = {"cid": cid, "order_id": liq.get("order_id"), "kind": kind, "checks": u["checks"],
-                            "waited_s": round(waited, 3), "at": datetime.now(timezone.utc).isoformat()}
+        at = datetime.now(timezone.utc).isoformat()
+        liq["escalated"] = {"id": f"esc-{cid}-{liq.get('attempt')}-{at}", "cid": cid, "order_id": liq.get("order_id"),
+                            "kind": kind, "checks": u["checks"], "waited_s": round(waited, 3), "at": at}
         log(f"LIQUIDATION ESCALATED — attempt {cid} unresolved ({kind}) after {u['checks']} checks / {waited:.0f}s. "
             "NOT resubmitting; operator must reconcile with broker evidence.")
     else:
@@ -906,10 +990,11 @@ def _liquidation_step(qty, reason=None, day_stamp=None):
     if not ok:
         return "PENDING"
     if int(liq.get("attempt") or 0) > 0 and not liq.get("order_id") and not liq.get("client_order_id") \
-            and not (liq.get("abandoned_attempts") and not liq.get("escalated")):
+            and liq.get("authorized_attempt") != int(liq.get("attempt") or 0) + 1:
         if not liq.get("escalated"):
-            liq["escalated"] = {"cid": None, "kind": "NO_IDENTITY", "checks": 0, "waited_s": 0,
-                                "at": datetime.now(timezone.utc).isoformat()}
+            at = datetime.now(timezone.utc).isoformat()
+            liq["escalated"] = {"id": f"esc-none-{liq.get('attempt')}-{at}", "cid": None, "kind": "NO_IDENTITY",
+                                "checks": 0, "waited_s": 0, "at": at}
             log("LIQUIDATION ESCALATED — attempt recorded without any order identity; cannot reconcile. NOT resubmitting.")
             db.set_liquidation_state(SYMBOL, **liq)
         return "PENDING"
@@ -954,6 +1039,11 @@ def _liquidation_step(qty, reason=None, day_stamp=None):
     # 4. Persist intent BEFORE submitting, then sell exactly the post-reconciliation quantity.
     attempt = int(liq.get("attempt") or 0) + 1
     cid = f"liq-{liq.get('started')}-{attempt}"
+    if liq.get("authorized_attempt") is not None:
+        if liq["authorized_attempt"] != attempt:
+            log(f"  Authorized attempt {liq['authorized_attempt']} != next attempt {attempt}; not selling.")
+            return "PENDING"
+        liq.pop("authorized_attempt")                      # exactly-once: consumed with this intent write
     liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=q,
                inflight={"cid": cid, "since": _r1_now(), "checks": 0, "origin": "submit"})
     db.set_liquidation_state(SYMBOL, **liq)

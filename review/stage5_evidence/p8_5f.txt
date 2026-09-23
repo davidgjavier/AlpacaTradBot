@@ -1,0 +1,13 @@
+................................................................................................./Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=7>
+  method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=9>
+  method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+......
+----------------------------------------------------------------------
+Ran 103 tests in 20.335s
+
+OK
+
+    real read timeout fired after 1.50s (limit 1.5s read)
