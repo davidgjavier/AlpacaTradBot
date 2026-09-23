@@ -15,6 +15,7 @@ It never talks to Alpaca and never imports the bot module (so no dotenv/keys).
 """
 import ast
 import copy
+import json
 import math
 import os
 import socket
@@ -78,6 +79,14 @@ class MemoryDB:
         return dict(gross_pnl=0.0, fees_paid=0.0, net_pnl=0.0, slippage=kw.get("slippage") or 0.0)
 
 
+class FakeAPIError(Exception):
+    """Mirrors alpaca.common.exceptions.APIError's structured surface:
+    .status_code (HTTP) and .code (Alpaca JSON code)."""
+    def __init__(self, status_code, code, message):
+        super().__init__(json.dumps({"code": code, "message": message}))
+        self.status_code, self.code, self.message = status_code, code, message
+
+
 class Broker:
     """Fake Alpaca with reservation + cumulative fills.
 
@@ -104,6 +113,10 @@ class Broker:
         self.drop_order_kinds = set()      # order never reaches the broker, submit raises (truly not placed)
         self.reject_kinds_once = set()     # next submit of this kind is rejected outright (nothing placed)
         self.client_lookup_fails = False   # get_order_by_client_id raises a timeout (unknown)
+        # Position-read fault injection (P0-2 tests): position_fail(n) -> exception or None,
+        # where n is the 1-based count of get_open_position calls.
+        self.position_fail = None
+        self.position_calls = 0
 
     # --- helpers for tests
     def add_order(self, oid, kind, qty, status="new", filled=0.0, avg=None, **extra):
@@ -121,8 +134,13 @@ class Broker:
 
     # --- Alpaca-like surface
     def get_open_position(self, *a):
+        self.position_calls += 1
+        if self.position_fail is not None:
+            err = self.position_fail(self.position_calls)
+            if err is not None:
+                raise err
         if self.qty <= 1e-12:
-            raise Exception('{"code":40410000,"message":"position does not exist"}')
+            raise FakeAPIError(404, 40410000, "position does not exist")
         return NS(qty=str(self.qty))
 
     def submit_order(self, req):
@@ -181,7 +199,7 @@ class Broker:
                 if o.id in self.unknown_ids:
                     raise TimeoutError("fake broker: order lookup failed")
                 return o
-        raise Exception('{"code":40410000,"message":"order not found for client_order_id"}')
+        raise FakeAPIError(404, 40410000, "order not found for client_order_id")
 
     def get_order_by_id(self, oid):
         if oid in self.unknown_ids or oid not in self.orders:

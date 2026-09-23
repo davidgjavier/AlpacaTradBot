@@ -399,7 +399,7 @@ class E_LostSubmissionResponse(Base):
 
         def flaky_position(*a):
             # Reads before the TP submission succeed; reconciliation reads after it time out.
-            # (A failure at cycle START would hit get_position_qty's return-0 path: audit P0-2, still open.)
+            # (A cycle-START failure is covered separately by H5/H6: as of the P0-2 commit it skips the cycle.)
             if any(r._kind == "limit" for r in b.submitted):
                 raise TimeoutError("fake broker: position lookup timed out")
             return real_pos(*a)
@@ -531,3 +531,178 @@ class G_FillPriceEvidence(Base):
         self.assertEqual(t1["exit_reason"], "target1")
         self.assertAlmostEqual(t1["exit_price"], 101.57)
         self.assertAlmostEqual(t1["slippage"], abs(101.57 - TP_PX))
+
+
+# ===========================================================================
+# P0-2 focus (2026-09-23): position-read failures. UNKNOWN must never be
+# treated as a confirmed zero: no fictitious close, no state clearing, no new
+# entry, no order sized from an arithmetic (unsupported) quantity.
+# ===========================================================================
+TIMEOUT = lambda: TimeoutError("fake broker: position lookup timed out")  # noqa: E731
+
+
+def fail_from(n):
+    """position_fail predicate: reads 1..n-1 succeed, read n onward time out."""
+    return lambda k: TIMEOUT() if k >= n else None
+
+
+def fail_all():
+    return lambda k: TIMEOUT()
+
+
+def trades(ns, prefix=""):
+    return [t for t in ns["db"].trades if str(t.get("exit_reason", "")).startswith(prefix)]
+
+
+class H_PositionReadFailure(Base):
+
+    def reviewer_sequence(self):
+        """1.0 BTC; Target 1 already sold 0.5 (IOC filled; stop was cancelled for it).
+        Next cycle sees 0.5 held, order reports 0.5 cumulative, then the position
+        lookup inside Target-1 advancement fails (3rd read of the cycle)."""
+        ns = H.load_bot(qty=0.5, bid=101.6)
+        b = ns["_broker"]
+        b.add_order("tp1", "limit", 0.5, status="filled", filled=0.5, avg=101.5)
+        phase1(ns, tp_id="tp1", stop_id=None)
+        b.position_fail = fail_from(3)
+        return ns, b
+
+    # --- the reviewer's sequence ------------------------------------------
+    def test_H1_reviewer_sequence_no_double_subtraction_no_clear(self):
+        ns, b = self.reviewer_sequence()
+        before = dict(self.state(ns))
+        H.cycle(ns)
+        self.assertGreaterEqual(b.position_calls, 3, "scenario did not reach the failing read")
+        st = self.state(ns)
+        self.assertTrue(st, "position state was CLEARED while 0.5 BTC is still held")
+        self.assertEqual(st.get("take_profit_order_id"), "tp1", "pending order reference lost")
+        self.assertFalse(st.get("target1_filled"), "phase advanced without a known position")
+        self.assertEqual(trades(ns), [], "trade recorded while position size was unknown")
+        self.assertEqual(b.submitted, [], "order submitted/sized from an unsupported quantity")
+        self.assertEqual({k: st.get(k) for k in before}, before)
+        self.assertIn("POSITION UNKNOWN", H.text(ns))
+
+    def test_H2_recovery_after_reads_return_logs_once_and_protects(self):
+        ns, b = self.reviewer_sequence()
+        H.cycle(ns)
+        b.position_fail = None
+        H.cycle(ns)
+        t1 = trades(ns, "target1")
+        self.assertEqual(len(t1), 1)
+        self.assertAlmostEqual(t1[0]["qty"], 0.5, places=9)
+        self.assertTrue(self.state(ns).get("target1_filled"))
+        self.assertStopsCover(ns, 0.5, max_price=b.bid - 1e-9)
+        H.cycle(ns)                                              # idempotent: no second Target-1 row
+        self.assertEqual(len(trades(ns, "target1")), 1)
+        self.assertNoOversubscription(ns)
+
+    def test_H3_restart_after_failed_read_recovers_from_persisted_state(self):
+        ns, b = self.reviewer_sequence()
+        H.cycle(ns)
+        b.position_fail = None
+        ns2 = _restart(ns)
+        H.cycle(ns2)
+        self.assertEqual(len(trades(ns2, "target1")), 1)
+        self.assertTrue(self.state(ns2).get("target1_filled"))
+        self.assertStopsCover(ns2, 0.5, max_price=b.bid - 1e-9)
+
+    # --- same-cycle Target-1 execution, then the read fails ---------------
+    def test_H4_fill_this_cycle_then_read_fails_no_arithmetic_sizing(self):
+        ns = _target_reached()                                   # 1.0 held, bid >= target
+        b = ns["_broker"]
+        b.next_tp = ("filled", 0.5)
+        # reads: #1 cycle start, #2 phase-1 current qty; fail from #3 (after the IOC fill)
+        b.position_fail = fail_from(3)
+        H.cycle(ns)
+        self.assertGreaterEqual(b.position_calls, 3)
+        self.assertEqual([r for r in b.submitted if r._kind == "stop_limit"], [],
+                         "replacement stop sized from pre-submission arithmetic")
+        self.assertEqual(trades(ns), [])
+        st = self.state(ns)
+        self.assertTrue(st and st.get("take_profit_order_id"), "TP reference must persist")
+        self.assertFalse(st.get("target1_filled"))
+        b.position_fail = None
+        H.cycle(ns)                                              # recovery
+        self.assertEqual(len(trades(ns, "target1")), 1)
+        self.assertStopsCover(ns, 0.5, max_price=b.bid - 1e-9)
+        self.assertNoOversubscription(ns)
+
+    # --- initial-cycle (outer loop) lookup failure ------------------------
+    def test_H5_cycle_start_read_fails_state_and_pending_ref_preserved(self):
+        ns = H.load_bot(qty=1.0, bid=100.0)
+        b = ns["_broker"]
+        b.add_order("s1", "stop_limit", 0.5, stop_price=STOP_PX, limit_price=98.3)
+        b.add_order("tp1", "limit", 0.5, status="partially_filled", filled=0.0)
+        phase1(ns, tp_id="tp1", stop_id="s1")
+        before = dict(self.state(ns))
+        b.position_fail = fail_all()
+        H.cycle(ns)
+        self.assertEqual(self.state(ns), before, "state changed/cleared on an unknown position")
+        self.assertEqual(ns["db"].trades, [])
+        self.assertEqual(b.submitted, [])
+        self.assertIn("POSITION UNKNOWN", H.text(ns))
+        b.position_fail = None                                   # recovery: normal reconciliation resumes
+        H.cycle(ns)
+        self.assertEqual(self.state(ns).get("take_profit_order_id"), "tp1")
+        self.assertNoFalseTarget(ns)
+        self.assertNoOversubscription(ns)
+
+    def _buy_ready(self, ns):
+        calls = []
+        ns["place_buy"] = lambda: calls.append(1) or H.NS(id="buy1")
+        ns["strategies"].get_signal = lambda *a, **k: "buy"
+        ns["strategies"].is_volume_confirmed = lambda *a, **k: True
+        return calls
+
+    def test_H6_cycle_start_read_fails_blocks_new_entry(self):
+        ctrl = H.load_bot(qty=0.0, bid=100.0)                   # positive control: flat & readable -> buys
+        ctrl_calls = self._buy_ready(ctrl)
+        H.cycle(ctrl)
+        self.assertEqual(len(ctrl_calls), 1, "control: entry path not reached")
+        ns = H.load_bot(qty=0.5, bid=100.0)                     # really holding 0.5, read times out
+        calls = self._buy_ready(ns)
+        ns["_broker"].position_fail = fail_all()
+        H.cycle(ns)
+        self.assertEqual(calls, [], "new entry submitted while position was unknown")
+
+    def test_H7_unstructured_not_found_text_is_not_confirmed_flat(self):
+        ns = H.load_bot(qty=0.5, bid=100.0)
+        calls = self._buy_ready(ns)
+        ns["_broker"].position_fail = lambda k: Exception("upstream proxy: resource not found")
+        H.cycle(ns)
+        self.assertEqual(calls, [], "free-text 'not found' was treated as a confirmed zero position")
+
+    def test_H8_structured_404_is_confirmed_flat_control(self):
+        ns = H.load_bot(qty=0.0, bid=100.0)                     # genuine 404 position does not exist
+        ns["db"].states["BTC/USD"] = dict(entry_price=100.0, stop_order_id=None, entry_strategy="TREND")
+        H.cycle(ns)
+        self.assertEqual(ns["db"].states["BTC/USD"], {}, "confirmed-flat stale state should still clear")
+
+    # --- mid-cycle re-reads -------------------------------------------------
+    def test_H9_runner_phase_read_fails_no_fictitious_close(self):
+        ns = H.load_bot(qty=0.5, bid=101.6)
+        b = ns["_broker"]
+        b.add_order("s2", "stop_limit", 0.5, stop_price=100.5, limit_price=100.0)
+        ns["db"].states["BTC/USD"] = dict(entry_price=ENTRY, stop_order_id="s2", stop_price=100.5,
+                                          entry_time=datetime.now(timezone.utc).isoformat(), peak_price=101.6,
+                                          entry_strategy="SCALP", target1_filled=True, original_qty=ORIG)
+        before = dict(self.state(ns))
+        b.position_fail = fail_from(2)                           # cycle-start OK, runner re-read fails
+        H.cycle(ns)
+        self.assertGreaterEqual(b.position_calls, 2)
+        self.assertEqual(trades(ns), [], "fictitious runner close recorded")
+        self.assertEqual(self.state(ns), before)
+
+    def test_H10_trend_stop_check_read_fails_no_fictitious_close(self):
+        ns = H.load_bot(qty=0.5, bid=101.6)
+        b = ns["_broker"]
+        b.add_order("s3", "stop_limit", 0.5, stop_price=99.0, limit_price=98.5, status="canceled")
+        ns["db"].states["BTC/USD"] = dict(entry_price=ENTRY, stop_order_id="s3", stop_price=99.0,
+                                          entry_time=datetime.now(timezone.utc).isoformat(), peak_price=101.6,
+                                          entry_strategy="TREND")
+        before = dict(self.state(ns))
+        b.position_fail = fail_from(2)
+        H.cycle(ns)
+        self.assertGreaterEqual(b.position_calls, 2)
+        self.assertEqual(trades(ns), [], "fictitious stop-loss close recorded")
+        self.assertEqual(self.state(ns), before)

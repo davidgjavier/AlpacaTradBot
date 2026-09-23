@@ -410,10 +410,22 @@ def stop_order_still_open(order_id):
 
 
 def _is_not_found(e):
-    """True only for a broker 'does not exist' answer (HTTP 404 / code 40410000),
-    which is information. Timeouts and other errors are NOT this: they mean unknown."""
-    s = str(e).lower()
-    return "40410000" in s or "not found" in s or "does not exist" in s
+    """True only for a STRUCTURED broker 'does not exist' answer: HTTP 404 with
+    Alpaca error code 40410000 (alpaca.common.exceptions.APIError exposes
+    .status_code and .code). Free text is not evidence: a proxy or client error
+    whose message happens to say "not found" is UNKNOWN, never a confirmed zero.
+    Assumption (to verify in paper contract tests): Alpaca returns 404/40410000
+    for "position does not exist" and for an unknown client_order_id."""
+    status = getattr(e, "status_code", None)
+    try:
+        code = getattr(e, "code", None)
+    except Exception:          # APIError.code json-parses the body; malformed -> unknown
+        return False
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        return False
+    return status == 404 and code == 40410000
 
 
 def _order_lookup(ref):
@@ -851,8 +863,21 @@ def _ensure_stop_covers(stop_id, qty, stop_price):
     return sid, spx
 
 
-def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs, fallback_remaining):
-    """Advance to phase 2 using the CONFIRMED filled quantity only."""
+def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs):
+    """Advance to phase 2 using the CONFIRMED filled quantity only.
+
+    The remaining position is taken ONLY from the broker. If it cannot be read,
+    nothing happens this call: no trade row, no phase change, no stop cancel or
+    placement, and persisted state (incl. the TP reference) is untouched, so the
+    next cycle re-runs this exact reconciliation. This makes Target-1 recording
+    idempotent across failed reads and restarts. (No arithmetic fallback: a
+    later cycle's observed qty is already net of the fill, so subtracting the
+    cumulative fill again understated the position — review of 51bbd91.)"""
+    actual = _position_qty_strict()
+    if actual is None:
+        log(f"[STRATEGY: SCALP] POSITION UNKNOWN after Target-1 order {tp_ref} reported {fs.get('filled_qty')} filled — "
+            f"not recording, not advancing, not sizing any order; will reconcile when the position is readable.")
+        return
     sold = float(fs["filled_qty"])
     tp_price = pos_state.get("take_profit_price") or entry
     reason = "target1" if fs["state"] == "FILLED" else "target1_partial"
@@ -878,8 +903,7 @@ def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp
                                entry_time=entry_time, peak_price=peak, take_profit_order_id=None, take_profit_price=None,
                                entry_strategy="SCALP", target1_filled=True, original_qty=pos_state.get("original_qty"))
         return
-    actual = _position_qty_strict()                     # size protection from the broker, not arithmetic
-    remaining_qty = _floor_qty(actual if actual is not None else fallback_remaining)
+    remaining_qty = _floor_qty(actual)                  # from the broker, read before any action above
     if remaining_qty <= 0:
         db.clear_position_state(SYMBOL)
         return
@@ -903,14 +927,13 @@ def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp
 
 
 def _scalp_reconcile_tp(pos_state, entry, entry_time, peak, stop_id, stop_price, tp_ref, fs,
-                        expected_qty, tp_qty, tp_price, original_qty, just_submitted):
+                        observed_qty, tp_qty, tp_price, original_qty, just_submitted):
     """Decide the next action from the TP order's reconciled state, the ACTUAL
     broker position and ACTUAL open-order reservations — never from the
     pre-submission quantity alone. UNKNOWN stays UNKNOWN."""
     st = fs["state"]
     if st in ("FILLED", "TERMINAL") and (fs.get("filled_qty") or 0) > 0:
-        _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs,
-                                     fallback_remaining=expected_qty - fs["filled_qty"])
+        _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs)
         return
     if st == "TERMINAL" or (st == "NOT_FOUND" and not just_submitted):
         # Definitively nothing sold (terminal with 0 filled), or the broker still
@@ -918,9 +941,18 @@ def _scalp_reconcile_tp(pos_state, entry, entry_time, peak, stop_id, stop_price,
         what = f"ended {fs.get('status')} with 0 filled" if st == "TERMINAL" else "does not exist at the broker"
         log(f"[STRATEGY: SCALP] Target-1 order {tp_ref} {what} — NOT Target 1; keeping full protection.")
         if just_submitted:
-            new_id, new_px, _ = _place_validated_stop(expected_qty, stop_price, "TP ended unfilled")
+            # The stop was cancelled for this TP: size the replacement from a fresh
+            # broker read, not from the pre-submission quantity.
+            pos = _position_qty_strict()
+            if pos is None:
+                log(f"[STRATEGY: SCALP] POSITION UNKNOWN after Target-1 order {tp_ref} ended unfilled — no stop sized "
+                    f"from the pre-submission quantity; reference kept, reconciling next cycle. POSITION UNPROTECTED meanwhile.")
+                _scalp_persist_phase1(entry, entry_time, peak, None, stop_price, tp_ref, tp_price, original_qty)
+                return
+            new_id, new_px, _ = _place_validated_stop(pos, stop_price, "TP ended unfilled")
         else:
-            new_id, new_px = _ensure_stop_covers(stop_id, _floor_qty(expected_qty), stop_price)
+            # observed_qty was read from the broker earlier THIS cycle (strict).
+            new_id, new_px = _ensure_stop_covers(stop_id, _floor_qty(observed_qty), stop_price)
         _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, None, tp_price, original_qty)
         return
     # OPEN, UNKNOWN, or NOT_FOUND right after submission (may not be visible yet):
@@ -1052,8 +1084,17 @@ def main():
         circuit_breaker_tripped = today_pl <= -DAILY_LOSS_LIMIT_USD
         already_flattened_today = baseline.get("breaker_tripped_stamp") == today_stamp
 
-        qty = get_position_qty()
+        # P0-2: an unreadable position is UNKNOWN, not zero. Treating it as zero
+        # used to skip all protection logic, clear persisted state (losing
+        # pending order references) and allow a NEW ENTRY. Now nothing that
+        # depends on the position runs this cycle; state is left untouched.
+        qty = _position_qty_strict()
         pos_state = db.get_position_state(SYMBOL)
+        if qty is None:
+            log("POSITION UNKNOWN — broker position read failed (not a confirmed zero). Skipping all "
+                "position-dependent actions and new entries this cycle; state and pending order references preserved.")
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
 
         if circuit_breaker_tripped:
             if not already_flattened_today:
@@ -1159,7 +1200,11 @@ def main():
             #     code — deliberate, to avoid any risk of regressing
             #     that already-verified logic while adding this.
             if entry_strategy == "SCALP" and not pos_state.get("target1_filled"):
-                current_qty = get_position_qty()
+                current_qty = _position_qty_strict()
+                if current_qty is None:
+                    log("POSITION UNKNOWN — position re-read failed mid-cycle; no close recorded, state preserved, retrying next cycle.")
+                    time.sleep(CHECK_INTERVAL_SECONDS)
+                    continue
                 if current_qty <= 0:
                     # Full-qty stop fired before Target 1 was ever hit
                     # (Target 1 is only half-qty — it can't zero the
@@ -1200,7 +1245,11 @@ def main():
                 # deliberately reimplemented here rather than reusing
                 # the TREND block below (see the comment above this
                 # whole section for why).
-                current_qty = get_position_qty()
+                current_qty = _position_qty_strict()
+                if current_qty is None:
+                    log("POSITION UNKNOWN — position re-read failed mid-cycle; no close recorded, state preserved, retrying next cycle.")
+                    time.sleep(CHECK_INTERVAL_SECONDS)
+                    continue
                 if current_qty <= 0:
                     exit_price_estimate = pos_state.get("stop_price") or entry
                     # The runner's qty is whatever's left after Target
@@ -1318,7 +1367,11 @@ def main():
                 continue
 
             if not stop_order_still_open(stop_id):
-                current_qty = get_position_qty()
+                current_qty = _position_qty_strict()
+                if current_qty is None:
+                    log("POSITION UNKNOWN — position re-read failed mid-cycle; no close recorded, state preserved, retrying next cycle.")
+                    time.sleep(CHECK_INTERVAL_SECONDS)
+                    continue
                 open_count = get_open_order_count()
                 if current_qty <= 0:
                     # The resting stop-limit filled on its own — Alpaca
