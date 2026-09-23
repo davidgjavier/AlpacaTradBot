@@ -1,0 +1,50 @@
+--- crypto_trading_bot.py	2026-09-23 12:01:47
++++ review/drafts/crypto_trading_bot_R1.py	2026-09-23 12:16:01
+@@ -776,6 +776,12 @@
+ # order without a confirmed quantity is what this stage forbids; choosing a different
+ # unknown-quantity policy is pending decision D8.
+ LIQ_FLAT_BTC = 0.0001
++# DRAFT R1 (for review; not adopted): delayed-visibility reconciliation.
++# An attempt whose submit outcome is not PROVEN is IN FLIGHT. A client-id 404 is not proof
++# of non-placement while inside the bound. After BOTH bounds, escalate (persisted); never
++# resubmit automatically. Resolution of an escalated attempt is an operator action.
++R1_VIS_MIN_CHECKS = 3          # draft value
++R1_VIS_WINDOW_S = 900          # draft value (5 cycles at 180 s)
+ 
+ 
+ def _open_sell_orders_strict():
+@@ -834,6 +840,24 @@
+         if fs["state"] == "NOT_FOUND" and liq.get("order_id"):
+             log(f"  Liquidation sell {ref} not found by id — waiting to reconcile; no repeat sell, no completion.")
+             return "PENDING"
++        inflight = liq.get("inflight") or {}
++        if fs["state"] == "NOT_FOUND" and inflight.get("cid") == liq.get("client_order_id"):
++            inflight["nf"] = int(inflight.get("nf") or 0) + 1
++            waited = time.time() - float(inflight.get("since") or time.time())
++            liq["inflight"] = inflight
++            if (not liq.get("escalated") and inflight["nf"] >= R1_VIS_MIN_CHECKS
++                    and waited >= R1_VIS_WINDOW_S):
++                liq["escalated"] = {"cid": inflight.get("cid"), "nf": inflight["nf"], "waited_s": round(waited, 1),
++                                    "at": datetime.now(timezone.utc).isoformat()}
++                log(f"LIQUIDATION ESCALATED — sell {inflight.get('cid')} still not visible after {inflight['nf']} "
++                    f"checks / {waited:.0f}s. NOT resubmitting; operator must reconcile with broker evidence.")
++            else:
++                log(f"  Liquidation sell {inflight.get('cid')} submit outcome unproven and not yet visible "
++                    f"(check {inflight['nf']}, {waited:.0f}s) — treating as IN FLIGHT; no repeat sell, no completion.")
++            db.set_liquidation_state(SYMBOL, **liq)
++            return "PENDING"
++        if fs["state"] in ("FILLED", "TERMINAL"):
++            liq.pop("inflight", None)
+     # 2. Every other open sell can still execute (and reserves quantity): cancel, then CONFIRM gone.
+     opens = _open_sell_orders_strict()
+     if opens is None:
+@@ -856,7 +880,8 @@
+     # 4. Persist intent BEFORE submitting, then sell exactly the post-reconciliation quantity.
+     attempt = int(liq.get("attempt") or 0) + 1
+     cid = f"liq-{liq.get('started')}-{attempt}"
+-    liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=q)
++    liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=q,
++               inflight={"cid": cid, "since": time.time(), "nf": 0})
+     db.set_liquidation_state(SYMBOL, **liq)
+     sell_qty = _floor_qty(q)
+     try:

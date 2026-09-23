@@ -45,7 +45,11 @@ class L_SameDayLatch(unittest.TestCase):
         H.cycle(ns)
         self.assertEqual(buys(ns["_broker"]), [], "entry placed after the breaker tripped today")
 
-    def test_new_utc_day_unlatches(self):
+    def test_manually_installed_new_day_state_allows_entry(self):
+        """LABEL (accurate): installs the state reset_day_if_needed() WOULD return on a new UTC day (new
+        day_stamp, breaker_tripped_stamp None) by hand. It does NOT exercise a real clock/date transition or
+        reset_day_if_needed() itself (the harness stubs it). It proves the latch keys on the stamp and that an
+        entry is possible in this harness (so the 'no entry' assertions are not vacuous)."""
         ns = recovered_latched_day()
         ns["db"].baseline.update(day_stamp="2026-09-24", breaker_tripped_stamp=None)   # reset_day_if_needed result
         H.cycle(ns)

@@ -1,0 +1,13 @@
+..........................................................................F....uuuus..
+======================================================================
+FAIL: test_intent_persisted_but_never_sent_is_resubmitted_once (test_stage5c_latch_and_crash.C_CrashWindows)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5c_latch_and_crash.py", line 121, in test_intent_persisted_but_never_sent_is_resubmitted_once
+    self.assertAlmostEqual(b.qty, 0.0)
+AssertionError: 0.5 != 0.0 within 7 places (0.5 difference)
+
+----------------------------------------------------------------------
+Ran 86 tests in 1.676s
+
+FAILED (failures=1, skipped=1, unexpected successes=4)
