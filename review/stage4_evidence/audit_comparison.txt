@@ -1,0 +1,36 @@
+CHANGED (audited -> 94b2efd -> integrated 1f6171b):
+  FAIL -> FAIL -> PASS                     Exit must not be confirmed on lookup error
+  FAIL -> PASS -> PASS                     Active status partially_filled
+  FAIL -> PASS -> PASS                     Active status pending_cancel
+  FAIL -> PASS -> PASS                     Active status pending_replace
+  FAIL -> HARNESS_ERROR -> HARNESS_ERROR   Rejected scalp TP must not count as filled
+
+REMAINING non-PASS on integrated 1f6171b:
+  [FAIL] day_trading_bot lookup outage :: Broker timeout returned qty=0.0; required unknown/error, not flat
+  [FAIL] crypto_trading_bot lookup outage :: Broker timeout returned qty=0.0; required unknown/error, not flat
+  [HARNESS_ERROR] Rejected scalp TP must not count as filled :: IndexError('list index out of range')
+  [FAIL] Resting exit between polls must be recorded :: Position became zero before cycle: trade rows=0, state={}
+  [FAIL] Breaker remains latched BTC/USD :: Previously tripped breaker, recovered P/L: new orders=1
+  [FAIL] Breaker remains latched NVDA :: Previously tripped breaker, recovered P/L: new orders=1
+  [FAIL] Breaker must retry residual liquidation :: Exposure remains after earlier flatten failed: flatten retry count=0
+  [FAIL] Cancel/fill race must re-read position before sell :: Stop filled during cancel: market sell still submitted qty=10.0
+  [FAIL] Whole-share entry respects notional cap :: $500 cap, $600 share: submitted notional=$600
+  [FAIL] Equity cannot add unbudgeted position on crossover :: Already holding 5 shares: additional buy orders=1
+  [FAIL] Pending crypto entry must prevent duplicate entry :: Entry still unfilled across two cycles: buy submissions=2
+  [FAIL] Partial entry growth must resize protection :: Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0
+  [FAIL] Time-decay exit honors documented unconditional policy :: Time-decay risk exit with 2% spread: orders=0
+  [FAIL] Reject crossed quotes :: crossed quote passes spread gate=True
+  [FAIL] Reject NaN quotes :: NaN quote passes spread gate=True
+  [FAIL] RVOL settings reach executing functions :: RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8
+  [FAIL] Reject nonfinite parameter :: NaN parameter accepted=True
+  [FAIL] Parameter bounds respect available lookback :: Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None
+  [FAIL] Hysteresis counts unique bars :: Same bar evaluated twice changes active regime to breakout
+  [SENSITIVITY] EMA200 warmup stable under regime transition :: EMA200 using 500 bars=104.104164; using fetched 250=100.000000
+  [FAIL] Negative residual is exposure, not flat :: Unexpected short -1 share is reported remaining=0.0
+  [FAIL] Protection independent of historical data outage :: Unprotected position during bar endpoint failure: protection/exit actions=0
+  [FAIL] BTC residual uses instrument precision :: 0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0
+  [FAIL] Failed stop replacement preserves prior risk floor :: Failed replacement after cancel loses prior stop floor: stored stop=None
+  [FAIL] EOD retries until actually flat :: EOD already marked, residual 5 shares: liquidation retry count=0
+  [FAIL] Scalp obeys documented time-decay exit :: 3-hour losing scalp, both orders open: time-decay sell count=0
+  [FAIL] Unmeasurable account risk blocks new entry :: Cannot measure daily risk: new entries=1
+  [FAIL] Concurrent state writer cannot resurrect cleared position :: Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0

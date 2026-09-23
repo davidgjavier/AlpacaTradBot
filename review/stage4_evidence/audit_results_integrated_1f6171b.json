@@ -1,0 +1,239 @@
+{
+  "method": "Original function ASTs; injected fake broker, data, time, and memory state. No network. FAIL = safety invariant violation.",
+  "counts": {
+    "PASS": 10,
+    "FAIL": 26,
+    "SENSITIVITY": 1,
+    "HARNESS_ERROR": 1
+  },
+  "tests": [
+    {
+      "test": "day_trading_bot lookup outage",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
+    },
+    {
+      "test": "crypto_trading_bot lookup outage",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
+    },
+    {
+      "test": "Exit must not be confirmed on lookup error",
+      "kind": "original helper",
+      "status": "PASS",
+      "detail": "Verification reports remaining=None during broker outage"
+    },
+    {
+      "test": "Active status partially_filled",
+      "kind": "original helper",
+      "status": "PASS",
+      "detail": "partially_filled: treated as open=True"
+    },
+    {
+      "test": "Active status pending_cancel",
+      "kind": "original helper",
+      "status": "PASS",
+      "detail": "pending_cancel: treated as open=True"
+    },
+    {
+      "test": "Active status pending_replace",
+      "kind": "original helper",
+      "status": "PASS",
+      "detail": "pending_replace: treated as open=True"
+    },
+    {
+      "test": "Rejected scalp TP must not count as filled",
+      "kind": "original main loop",
+      "status": "HARNESS_ERROR",
+      "detail": "IndexError('list index out of range')"
+    },
+    {
+      "test": "Resting exit between polls must be recorded",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Position became zero before cycle: trade rows=0, state={}"
+    },
+    {
+      "test": "Breaker remains latched BTC/USD",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
+    },
+    {
+      "test": "Breaker remains latched NVDA",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
+    },
+    {
+      "test": "Breaker must retry residual liquidation",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Exposure remains after earlier flatten failed: flatten retry count=0"
+    },
+    {
+      "test": "Cancel/fill race must re-read position before sell",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "Stop filled during cancel: market sell still submitted qty=10.0"
+    },
+    {
+      "test": "Whole-share entry respects notional cap",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "$500 cap, $600 share: submitted notional=$600"
+    },
+    {
+      "test": "Equity cannot add unbudgeted position on crossover",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Already holding 5 shares: additional buy orders=1"
+    },
+    {
+      "test": "Pending crypto entry must prevent duplicate entry",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Entry still unfilled across two cycles: buy submissions=2"
+    },
+    {
+      "test": "Partial entry growth must resize protection",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0"
+    },
+    {
+      "test": "Time-decay exit honors documented unconditional policy",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Time-decay risk exit with 2% spread: orders=0"
+    },
+    {
+      "test": "Reject crossed quotes",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "crossed quote passes spread gate=True"
+    },
+    {
+      "test": "Reject NaN quotes",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "NaN quote passes spread gate=True"
+    },
+    {
+      "test": "RVOL settings reach executing functions",
+      "kind": "original strategy",
+      "status": "FAIL",
+      "detail": "RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8"
+    },
+    {
+      "test": "Reject nonfinite parameter",
+      "kind": "original strategy",
+      "status": "FAIL",
+      "detail": "NaN parameter accepted=True"
+    },
+    {
+      "test": "Parameter bounds respect available lookback",
+      "kind": "original strategy",
+      "status": "FAIL",
+      "detail": "Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None"
+    },
+    {
+      "test": "Hysteresis counts unique bars",
+      "kind": "original strategy",
+      "status": "FAIL",
+      "detail": "Same bar evaluated twice changes active regime to breakout"
+    },
+    {
+      "test": "EMA200 warmup stable under regime transition",
+      "kind": "sensitivity diagnostic",
+      "status": "SENSITIVITY",
+      "detail": "EMA200 using 500 bars=104.104164; using fetched 250=100.000000"
+    },
+    {
+      "test": "Negative residual is exposure, not flat",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "Unexpected short -1 share is reported remaining=0.0"
+    },
+    {
+      "test": "Protection independent of historical data outage",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Unprotected position during bar endpoint failure: protection/exit actions=0"
+    },
+    {
+      "test": "BTC residual uses instrument precision",
+      "kind": "original helper",
+      "status": "FAIL",
+      "detail": "0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0"
+    },
+    {
+      "test": "Failed stop replacement preserves prior risk floor",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Failed replacement after cancel loses prior stop floor: stored stop=None"
+    },
+    {
+      "test": "ATR gap formula and insufficient macro history",
+      "kind": "positive control",
+      "status": "PASS",
+      "detail": "Gap TR=[12]; constant-range ATR=2.0; short macro history returns unknown"
+    },
+    {
+      "test": "Exclude forming candle",
+      "kind": "positive control",
+      "status": "PASS",
+      "detail": "Forming candle removed: remaining bars=1"
+    },
+    {
+      "test": "Macro fails closed",
+      "kind": "positive control",
+      "status": "PASS",
+      "detail": "Insufficient macro history allows entry=False"
+    },
+    {
+      "test": "Unknown open-order count prevents duplicate stop",
+      "kind": "positive control",
+      "status": "PASS",
+      "detail": "Unknown open-order inventory: replacement orders=0"
+    },
+    {
+      "test": "Hung-stop emergency bypasses spread",
+      "kind": "positive control",
+      "status": "PASS",
+      "detail": "Flash gap past stop-limit, wide spread: emergency sell attempted=True (cancellation race tested separately)"
+    },
+    {
+      "test": "EOD retries until actually flat",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "EOD already marked, residual 5 shares: liquidation retry count=0"
+    },
+    {
+      "test": "Scalp obeys documented time-decay exit",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "3-hour losing scalp, both orders open: time-decay sell count=0"
+    },
+    {
+      "test": "Unmeasurable account risk blocks new entry",
+      "kind": "original main loop",
+      "status": "FAIL",
+      "detail": "Cannot measure daily risk: new entries=1"
+    },
+    {
+      "test": "Concurrent state writer cannot resurrect cleared position",
+      "kind": "actual SQLite ordered concurrency",
+      "status": "FAIL",
+      "detail": "Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0"
+    },
+    {
+      "test": "ATR-fallback bracket payload is constructible",
+      "kind": "installed SDK offline validation",
+      "status": "PASS",
+      "detail": "SDK constructor accepts; server validation remains untested"
+    }
+  ]
+}
