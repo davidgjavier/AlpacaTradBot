@@ -247,7 +247,9 @@ class G4_BoundedPagination(unittest.TestCase):
 
     def test_page_failure_is_not_absence(self):
         b, c, gw, clk, db = self.hidden_then_listed(1200)
-        b.fail_pages = {b.list_calls + 2}                # the 2nd page of the next scan fails
+        # The 2nd page of the next scan fails on EVERY attempt (the wrapper's bounded read retry
+        # would otherwise turn a single failed call into a transient blip).
+        b.fail_pages = set(range(b.list_calls + 2, b.list_calls + 40))
         r = gw.reconcile("r3-g4")
         self.assertIn(r.state, ("UNRESOLVED",))
         self.assertIn("r3-g4", queued(db))

@@ -1,4 +1,4 @@
-# Round-3 suite (21) vs BASELINE bb2a2f8 broker_io.py, 2026-09-23 08:49 AM PDT
+# Round-3 suite (21) vs BASELINE bb2a2f8, page-failure fixture corrected (fails every retry), 2026-09-23 08:52 AM PDT
 test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
 test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... FAIL
 test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... FAIL
@@ -25,7 +25,7 @@ test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
 ERROR: test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 275, in test_abandon_keeps_history_monitoring_and_entry_lock
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 277, in test_abandon_keeps_history_monitoring_and_entry_lock
     n_events = len(gw.store.events("r3-g5"))
 AttributeError: 'IntentStore' object has no attribute 'events'
 
@@ -33,7 +33,7 @@ AttributeError: 'IntentStore' object has no attribute 'events'
 ERROR: test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 289, in test_abandon_refused_when_fresh_check_finds_the_order
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 291, in test_abandon_refused_when_fresh_check_finds_the_order
     r = gw.abandon("r3-g5b", operator="david", note="x")
 AttributeError: 'OrderGateway' object has no attribute 'abandon'
 
@@ -41,7 +41,7 @@ AttributeError: 'OrderGateway' object has no attribute 'abandon'
 ERROR: test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 266, in test_acknowledge_changes_nothing_but_the_record
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 268, in test_acknowledge_changes_nothing_but_the_record
     r = gw.acknowledge("r3-g5", operator="david", note="saw the alert")
 AttributeError: 'OrderGateway' object has no attribute 'acknowledge'
 
@@ -49,7 +49,7 @@ AttributeError: 'OrderGateway' object has no attribute 'acknowledge'
 ERROR: test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 315, in test_conflict_cannot_be_abandoned
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 317, in test_conflict_cannot_be_abandoned
     gw.abandon("r3-g5c", operator="david", note="x")
 AttributeError: 'OrderGateway' object has no attribute 'abandon'
 
@@ -57,7 +57,7 @@ AttributeError: 'OrderGateway' object has no attribute 'abandon'
 ERROR: test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 295, in test_late_order_after_abandon_becomes_conflict_and_relocks
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 297, in test_late_order_after_abandon_becomes_conflict_and_relocks
     gw.abandon("r3-g5", operator="david", note="x")
 AttributeError: 'OrderGateway' object has no attribute 'abandon'
 
@@ -65,7 +65,7 @@ AttributeError: 'OrderGateway' object has no attribute 'abandon'
 ERROR: test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 306, in test_release_requires_abandoned_and_is_explicit
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 308, in test_release_requires_abandoned_and_is_explicit
     r = gw.release_entry_lock("r3-g5", operator="david", note="x")   # not abandoned yet
 AttributeError: 'OrderGateway' object has no attribute 'release_entry_lock'
 
@@ -160,16 +160,16 @@ FAIL: test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_Bound
 Traceback (most recent call last):
   File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3.py", line 239, in test_order_on_page_three_is_found_by_bounded_scan
     self.assertEqual((r.state, r.order_id), ("ACCEPTED", b.orders[-1]["id"]))
-AssertionError: Tuples differ: ('UNRESOLVED', None) != ('ACCEPTED', '61b7812f-1ead-4dbf-b326-1b392c548edf')
+AssertionError: Tuples differ: ('UNRESOLVED', None) != ('ACCEPTED', 'faf5856d-8baf-4115-b85e-6da63c824fc7')
 
 First differing element 0:
 'UNRESOLVED'
 'ACCEPTED'
 
 - ('UNRESOLVED', None)
-+ ('ACCEPTED', '61b7812f-1ead-4dbf-b326-1b392c548edf')
++ ('ACCEPTED', 'faf5856d-8baf-4115-b85e-6da63c824fc7')
 
 ----------------------------------------------------------------------
-Ran 21 tests in 0.620s
+Ran 21 tests in 0.565s
 
 FAILED (failures=9, errors=6)
