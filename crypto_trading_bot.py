@@ -770,10 +770,11 @@ def flatten_position(qty, stop_order_id, reason):
 #
 # Protection gap -- stated accurately: while liquidating, the residual has NO resting
 # protective stop (stops are cancelled so the sell is not rejected for reserved balance).
-# Exposure is bounded by the working sell or the next cycle's re-sell. If position reads
-# keep failing, nothing is sold or protected until a read succeeds: sizing any order
-# without a confirmed quantity is exactly what this stage forbids, and choosing a
-# different unknown-quantity policy is pending decision D8.
+# NOTHING here bounds the duration or the loss of that exposure: a working market sell
+# may not execute, the next cycle may not run (process stopped, outages), sells can be
+# rejected, and while position/order reads fail nothing is sold or protected. Sizing any
+# order without a confirmed quantity is what this stage forbids; choosing a different
+# unknown-quantity policy is pending decision D8.
 LIQ_FLAT_BTC = 0.0001
 
 
@@ -801,46 +802,60 @@ def _complete_liquidation(liq, qty):
 
 
 def _liquidation_step(qty, reason=None, day_stamp=None):
-    """One reconcile-then-act step. qty is THIS cycle's confirmed strict read (never None).
+    """One reconcile-then-act step. Order (Stage 5b): (1) reconcile our own last sell,
+    (2) cancel and CONFIRM every other open sell, (3) RE-READ the position -- the only read
+    used to complete or to size, since fills can happen during cancellation -- then
+    (4) complete only if that read confirms flat, else sell exactly that quantity.
+    Any UNKNOWN (order state, open-order list, position) keeps the liquidation pending
+    and submits nothing. `qty` (the cycle-top read) is informational only.
     Returns "FLAT" (confirmed, completed) or "PENDING"."""
     liq = db.get_liquidation_state(SYMBOL) or {}
     if not liq:
         liq = {"reason": reason, "day_stamp": day_stamp, "attempt": 0, "order_id": None,
                "client_order_id": None, "started": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")}
         db.set_liquidation_state(SYMBOL, **liq)
-    if qty <= LIQ_FLAT_BTC:
-        return _complete_liquidation(liq, qty)
     # 1. Reconcile our own last liquidation sell.
     ref = liq.get("order_id") or (("cid:" + liq["client_order_id"]) if liq.get("client_order_id") else None)
     if ref:
         fs = get_order_fill_state(ref)
+        if fs["state"] == "OPEN" and qty <= LIQ_FLAT_BTC:
+            # Position already reads flat but our sell can still execute: cancel it and re-check.
+            cancel_order_if_open(fs.get("id") or liq.get("order_id"))
+            fs = get_order_fill_state(ref)
         if fs["state"] == "OPEN":
             log(f"  Liquidation sell {ref} still working (filled {fs.get('filled_qty')}) — waiting; no repeat sell.")
             return "PENDING"
         if fs["state"] == "UNKNOWN":
-            log(f"  Liquidation sell {ref} state UNKNOWN — waiting to reconcile; no repeat sell.")
+            log(f"  Liquidation sell {ref} state UNKNOWN — waiting to reconcile; no repeat sell, no completion.")
             return "PENDING"
         if fs["state"] == "NOT_FOUND" and liq.get("order_id"):
-            log(f"  Liquidation sell {ref} not found by id — waiting to reconcile; no repeat sell.")
+            log(f"  Liquidation sell {ref} not found by id — waiting to reconcile; no repeat sell, no completion.")
             return "PENDING"
-    # 2. Other open sells reserve quantity: cancel, then CONFIRM they are gone.
+    # 2. Every other open sell can still execute (and reserves quantity): cancel, then CONFIRM gone.
     opens = _open_sell_orders_strict()
     if opens is None:
-        log("  Open orders UNKNOWN — not selling this cycle.")
+        log("  Open orders UNKNOWN — not selling or completing this cycle.")
         return "PENDING"
     if opens:
         for o in opens:
             cancel_order_if_open(str(o.id))
         still = _open_sell_orders_strict()
         if still is None or still:
-            log("  Could not confirm open sell orders cancelled — not selling this cycle.")
+            log("  Could not confirm open sell orders cancelled — not selling or completing this cycle.")
             return "PENDING"
-    # 3. Persist intent BEFORE submitting, then sell exactly the confirmed quantity.
+    # 3. Re-read AFTER reconciliation/cancellation (a stop may have filled during cancellation).
+    q = _position_qty_strict()
+    if q is None:
+        log("  Position UNKNOWN after reconciliation — liquidation stays pending; nothing submitted.")
+        return "PENDING"
+    if q <= LIQ_FLAT_BTC:
+        return _complete_liquidation(liq, q)
+    # 4. Persist intent BEFORE submitting, then sell exactly the post-reconciliation quantity.
     attempt = int(liq.get("attempt") or 0) + 1
     cid = f"liq-{liq.get('started')}-{attempt}"
-    liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=qty)
+    liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=q)
     db.set_liquidation_state(SYMBOL, **liq)
-    sell_qty = _floor_qty(qty)
+    sell_qty = _floor_qty(q)
     try:
         order = trading_client.submit_order(MarketOrderRequest(
             symbol=SYMBOL, qty=sell_qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC,
@@ -850,11 +865,15 @@ def _liquidation_step(qty, reason=None, day_stamp=None):
         return "PENDING"
     liq["order_id"] = str(order.id)
     db.set_liquidation_state(SYMBOL, **liq)
-    log(f"LIQUIDATION sell attempt {attempt}: {sell_qty} BTC (confirmed this cycle) — id {order.id}")
-    # 4. Bounded in-cycle confirmation (latest read only).
+    log(f"LIQUIDATION sell attempt {attempt}: {sell_qty} BTC (confirmed after reconciliation) — id {order.id}")
+    # 5. Bounded in-cycle check. Completion is NOT declared here: the next cycle must reconcile
+    #    this sell as terminal and confirm flat (step 1-3) -- unless it is already confirmed
+    #    FILLED now and a latest read confirms zero.
     remaining = verify_sell_filled(sell_qty)
-    if remaining == 0.0:
-        return _complete_liquidation(liq, 0.0)
+    if remaining == 0.0 and get_order_fill_state(str(order.id))["state"] == "FILLED":
+        opens = _open_sell_orders_strict()
+        if opens == []:
+            return _complete_liquidation(liq, 0.0)
     log(f"  Liquidation still PENDING (latest read: {'UNKNOWN' if remaining is None else remaining}); "
         "breaker NOT marked done; new entries blocked; next cycle reconciles before acting.")
     return "PENDING"
