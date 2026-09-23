@@ -164,7 +164,15 @@ class B_TargetExecution(Base):
         self.assertNoFalseTarget(ns)
         self.assertNoOversubscription(ns)
         self.assertStopsCover(ns, 1.0, max_price=ENTRY)
+        # CHANGED 2026-09-23 (review of 9fab57e, case 1): a submission exception is
+        # UNKNOWN, not a confirmed rejection, so the client-id reference is kept
+        # for one more reconciliation (previously asserted None immediately).
+        self.assertTrue(str(self.state(ns).get("take_profit_order_id")).startswith("cid:"))
+        H.cycle(ns)   # a full cycle later the broker still has no such order -> resolved
         self.assertIsNone(self.state(ns).get("take_profit_order_id"))
+        self.assertNoFalseTarget(ns)
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 1.0, max_price=ENTRY)
 
     def test_B2_fully_filled_tp(self):
         ns = self.setup(next_tp=("filled", 0.5))
@@ -280,3 +288,246 @@ class D_BreakevenStopNeverAboveMarket(Base):
         ns = self._late_terminal_partial(bid=100.2, quote_available=False)
         self.assertAlmostEqual(self.state(ns)["stop_price"], STOP_PX)
         self.assertStopsCover(ns, 0.8, max_price=100.2 - 1e-9)
+
+
+# ===========================================================================
+# Review of 9fab57e (2026-09-23, p01_patch_review.md). Three counterexamples.
+# ===========================================================================
+def _target_reached(bid=101.6, qty=1.0):
+    ns = H.load_bot(qty=qty, bid=bid)
+    ns["_broker"].add_order("s1", "stop_limit", qty, stop_price=STOP_PX, limit_price=98.3)
+    phase1(ns, tp_id=None)
+    return ns
+
+
+def _restart(ns):
+    """Fresh bot namespace (new process) sharing only the broker and persisted DB state."""
+    ns2 = H.load_bot()
+    b = ns["_broker"]
+    ns2["trading_client"], ns2["_broker"], ns2["db"] = b, b, ns["db"]
+    ns2["get_live_quote"] = lambda: (b.bid, b.bid + 0.01)
+    return ns2
+
+
+class E_LostSubmissionResponse(Base):
+    """Case 1: the broker accepts (and may execute) the Target-1 IOC, but the
+    submission response is lost. Must be UNKNOWN -> reconciled by client id,
+    never 'rejected', and protection must be sized from the ACTUAL position."""
+
+    def run_lost(self, next_tp):
+        ns = _target_reached()
+        b = ns["_broker"]
+        b.next_tp = next_tp
+        b.lose_response_kinds = {"limit"}
+        H.cycle(ns)
+        return ns, b
+
+    def test_E1_reviewer_case_accepted_and_filled_response_lost(self):
+        ns, b = self.run_lost(("filled", 0.5))
+        self.assertAlmostEqual(b.qty, 0.5)
+        self.assertNoOversubscription(ns)                       # was: stale 1.0 BTC stop rejected
+        self.assertStopsCover(ns, 0.5, max_price=b.bid - 1e-9)  # was: 0 protected
+        t1 = [t for t in ns["db"].trades if str(t["exit_reason"]).startswith("target1")]
+        self.assertEqual(len(t1), 1)                            # was: no trade row
+        self.assertAlmostEqual(t1[0]["qty"], 0.5, places=9)
+        self.assertTrue(self.state(ns).get("target1_filled"))
+        self.assertNotIn("REJECTED", H.text(ns))
+
+    def test_E2_accepted_unfilled_response_lost(self):
+        ns, b = self.run_lost(("partial_then_cancel", 0.0))
+        self.assertAlmostEqual(b.qty, 1.0)
+        self.assertNoFalseTarget(ns)
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 1.0, max_price=b.bid - 1e-9)
+
+    def test_E3_accepted_partially_filled_response_lost(self):
+        ns, b = self.run_lost(("partial_then_cancel", 0.2))
+        self.assertAlmostEqual(b.qty, 0.8)
+        t1 = [t for t in ns["db"].trades if str(t["exit_reason"]).startswith("target1")]
+        self.assertEqual(len(t1), 1)
+        self.assertAlmostEqual(t1[0]["qty"], 0.2, places=9)
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 0.8, max_price=b.bid - 1e-9)
+
+    def test_E4_accepted_still_working_response_lost(self):
+        ns, b = self.run_lost(("partial_open", 0.1))            # 0.1 filled, 0.4 still reserved
+        self.assertNoFalseTarget(ns)
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 0.5, max_price=b.bid - 1e-9)  # 0.9 held - 0.4 reserved
+        self.assertTrue(str(self.state(ns).get("take_profit_order_id")).startswith("cid:"))
+
+    def test_E5_filled_response_lost_and_lookup_down_then_restart_reconciles(self):
+        ns = _target_reached()
+        b = ns["_broker"]
+        b.next_tp, b.lose_response_kinds, b.client_lookup_fails = ("filled", 0.5), {"limit"}, True
+        H.cycle(ns)
+        # Unknown outcome: no trade, no stale-qty order; ACTUAL 0.5 held & unreserved is protected.
+        self.assertEqual(ns["db"].trades, [])
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 0.5, max_price=b.bid - 1e-9)
+        ref = self.state(ns).get("take_profit_order_id")
+        self.assertTrue(str(ref).startswith("cid:"))            # intent persisted for recovery
+        # Process restarts; broker lookups work again.
+        b.client_lookup_fails, b.lose_response_kinds = False, set()
+        ns2 = _restart(ns)
+        H.cycle(ns2)
+        t1 = [t for t in ns2["db"].trades if str(t["exit_reason"]).startswith("target1")]
+        self.assertEqual(len(t1), 1)
+        self.assertAlmostEqual(t1[0]["qty"], 0.5, places=9)
+        self.assertTrue(self.state(ns2).get("target1_filled"))
+        self.assertNoOversubscription(ns2)
+        self.assertStopsCover(ns2, 0.5, max_price=b.bid - 1e-9)
+
+    def test_E6_order_never_reached_broker_keeps_full_protection_then_resolves(self):
+        ns = _target_reached()
+        b = ns["_broker"]
+        b.drop_order_kinds = {"limit"}
+        H.cycle(ns)
+        self.assertNoFalseTarget(ns)
+        self.assertNoOversubscription(ns)
+        self.assertStopsCover(ns, 1.0, max_price=b.bid - 1e-9)
+        b.drop_order_kinds = set()
+        H.cycle(ns)
+        self.assertIsNone(self.state(ns).get("take_profit_order_id"))
+        self.assertStopsCover(ns, 1.0, max_price=b.bid - 1e-9)
+
+    def test_E7_unknown_outcome_and_position_unreadable_places_nothing_from_stale_qty(self):
+        ns = _target_reached()
+        b = ns["_broker"]
+        b.next_tp, b.lose_response_kinds, b.client_lookup_fails = ("filled", 0.5), {"limit"}, True
+        real_pos = b.get_open_position
+
+        def flaky_position(*a):
+            # Reads before the TP submission succeed; reconciliation reads after it time out.
+            # (A failure at cycle START would hit get_position_qty's return-0 path: audit P0-2, still open.)
+            if any(r._kind == "limit" for r in b.submitted):
+                raise TimeoutError("fake broker: position lookup timed out")
+            return real_pos(*a)
+        b.get_open_position = flaky_position
+        H.cycle(ns)
+        self.assertNoOversubscription(ns)                      # no stale 1.0 BTC stop
+        self.assertEqual([r for r in b.submitted if r._kind == "stop_limit"], [])
+        self.assertIn("PROTECTION STATUS UNKNOWN", H.text(ns))
+        self.assertTrue(str(self.state(ns).get("take_profit_order_id")).startswith("cid:"))
+
+
+class F_FinalStopCandidateValidated(Base):
+    """Case 2: the FINAL stop candidate must be below the bid. If even the prior
+    floor is breached, exit (risk exit) instead of placing an immediately-
+    triggering stop; never widen the floor to make an order admissible."""
+
+    def late_partial(self, bid, prior_stop=STOP_PX, quote=True):
+        ns = H.load_bot(qty=0.8, bid=bid)
+        if not quote:
+            ns["get_live_quote"] = lambda: None
+        ns["_broker"].add_order("tp1", "limit", 0.5, status="canceled", filled=0.2, avg=101.55)
+        phase1(ns, tp_id="tp1", stop_id=None)
+        if prior_stop is None:
+            ns["db"].states["BTC/USD"]["stop_price"] = None
+        H.cycle(ns)
+        return ns, ns["_broker"]
+
+    def assertNoStopAtOrAboveBid(self, ns, b):
+        for o in b.open_stops():
+            self.assertLess(float(o.stop_price), b.bid)
+            self.assertLess(float(o.limit_price), b.bid)
+
+    def test_F1_reviewer_case_bid_below_breakeven_and_prior_stop(self):
+        ns, b = self.late_partial(bid=97.0)
+        self.assertNoStopAtOrAboveBid(ns, b)                 # was: stop 98.8 / limit 98.31 above bid 97
+        mkts = [r for r in b.submitted if r._kind == "market" and r.side == "sell"]
+        self.assertEqual(len(mkts), 1)
+        self.assertAlmostEqual(float(mkts[0].qty), 0.8)
+        self.assertAlmostEqual(b.qty, 0.0)
+        self.assertEqual([r for r in b.submitted if r._kind == "stop_limit" and float(r.stop_price) < STOP_PX], [],
+                         "floor was widened below the prior stop")
+        self.assertIn("RISK EXIT", H.text(ns))
+        self.assertNoOversubscription(ns)
+
+    def test_F2_missing_prior_stop_below_breakeven_does_not_invent_floor(self):
+        ns, b = self.late_partial(bid=99.0, prior_stop=None)
+        self.assertNoStopAtOrAboveBid(ns, b)
+        self.assertEqual([r for r in b.submitted if r._kind == "stop_limit"], [])
+        self.assertAlmostEqual(b.qty, 0.0)                   # risk exit, no invented lower floor
+
+    def test_F3_risk_exit_rejected_then_recovery_never_places_above_market_stop(self):
+        ns = H.load_bot(qty=0.8, bid=97.0)
+        b = ns["_broker"]
+        b.add_order("tp1", "limit", 0.5, status="canceled", filled=0.2, avg=101.55)
+        phase1(ns, tp_id="tp1", stop_id=None)
+        b.reject_kinds_once = {"market"}
+        H.cycle(ns)
+        self.assertNoStopAtOrAboveBid(ns, b)
+        self.assertAlmostEqual(b.qty, 0.8)                   # exit rejected: still held, flagged
+        self.assertTrue(self.state(ns).get("target1_filled"))
+        H.cycle(ns)                                          # recovery cycle, bid still below floor
+        self.assertNoStopAtOrAboveBid(ns, b)
+        self.assertAlmostEqual(b.qty, 0.0)                   # second risk exit succeeds
+        self.assertNoOversubscription(ns)
+
+    def test_F4_price_recovers_above_floor_restores_stop(self):
+        ns = H.load_bot(qty=0.8, bid=97.0)
+        b = ns["_broker"]
+        b.add_order("tp1", "limit", 0.5, status="canceled", filled=0.2, avg=101.55)
+        phase1(ns, tp_id="tp1", stop_id=None)
+        b.reject_kinds_once = {"market"}
+        H.cycle(ns)
+        b.bid = 100.0                                        # recovers above the 98.8 floor
+        H.cycle(ns)
+        self.assertStopsCover(ns, 0.8, max_price=b.bid - 1e-9)
+        self.assertAlmostEqual(float(b.open_stops()[0].stop_price), STOP_PX)
+
+    def test_F5_no_quote_places_existing_floor_flagged_unvalidated(self):
+        ns, b = self.late_partial(bid=100.2, quote=False)
+        self.assertStopsCover(ns, 0.8)
+        self.assertAlmostEqual(float(b.open_stops()[0].stop_price), STOP_PX)   # not widened
+        self.assertIn("UNVALIDATED", H.text(ns))
+
+
+class G_FillPriceEvidence(Base):
+    """Case 3: confirmed quantity with missing/invalid execution price must not
+    become a verified price with zero slippage; protection continues."""
+
+    def filled_without_price(self, avg_raw, status="filled", filled=0.5, qty=0.5):
+        ns = H.load_bot(qty=qty, bid=101.6)
+        b = ns["_broker"]
+        b.add_order("tp1", "limit", 0.5, status=status, filled=filled)
+        b.orders["tp1"].filled_avg_price = avg_raw
+        phase1(ns, tp_id="tp1", stop_id=None)
+        H.cycle(ns)
+        return ns, b
+
+    def check_unconfirmed(self, ns, b, qty_left, filled):
+        t1 = [t for t in ns["db"].trades if str(t["exit_reason"]).startswith("target1")]
+        self.assertEqual(len(t1), 1)
+        self.assertIn("price_unconfirmed", t1[0]["exit_reason"])
+        self.assertIsNone(t1[0]["slippage"])                  # was 0.0
+        self.assertAlmostEqual(t1[0]["qty"], filled, places=9)
+        self.assertIn("UNCONFIRMED", H.text(ns))
+        self.assertStopsCover(ns, qty_left, max_price=b.bid - 1e-9)   # protection continues
+
+    def test_G1_reviewer_case_missing_price(self):
+        ns, b = self.filled_without_price(None)
+        self.check_unconfirmed(ns, b, 0.5, 0.5)
+
+    def test_G2_nan_price(self):
+        ns, b = self.filled_without_price("nan")
+        self.check_unconfirmed(ns, b, 0.5, 0.5)
+
+    def test_G3_zero_and_negative_price(self):
+        for bad in ("0", "-5"):
+            ns, b = self.filled_without_price(bad)
+            self.check_unconfirmed(ns, b, 0.5, 0.5)
+
+    def test_G4_partial_terminal_missing_price(self):
+        ns, b = self.filled_without_price(None, status="canceled", filled=0.2, qty=0.8)
+        self.check_unconfirmed(ns, b, 0.8, 0.2)
+        self.assertIn("target1_partial_price_unconfirmed",
+                      [t["exit_reason"] for t in ns["db"].trades])
+
+    def test_G5_valid_price_still_recorded_exactly(self):
+        ns, b = self.filled_without_price("101.57")
+        t1 = [t for t in ns["db"].trades if str(t["exit_reason"]).startswith("target1")][0]
+        self.assertEqual(t1["exit_reason"], "target1")
+        self.assertAlmostEqual(t1["exit_price"], 101.57)
+        self.assertAlmostEqual(t1["slippage"], abs(101.57 - TP_PX))

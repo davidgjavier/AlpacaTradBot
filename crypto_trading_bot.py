@@ -409,30 +409,54 @@ def stop_order_still_open(order_id):
         return False
 
 
+def _is_not_found(e):
+    """True only for a broker 'does not exist' answer (HTTP 404 / code 40410000),
+    which is information. Timeouts and other errors are NOT this: they mean unknown."""
+    s = str(e).lower()
+    return "40410000" in s or "not found" in s or "does not exist" in s
+
+
+def _order_lookup(ref):
+    """ref is a broker order id, or 'cid:<client_order_id>' for an order whose
+    submission response may never have arrived."""
+    if isinstance(ref, str) and ref.startswith("cid:"):
+        return trading_client.get_order_by_client_id(ref[4:])
+    return trading_client.get_order_by_id(ref)
+
+
 def get_order_fill_state(order_id):
     """Explicit order outcome — the ONLY basis for scalp Target-1 decisions.
 
-    state: NONE     no order id recorded
-           OPEN     can still execute (may be partially filled)
-           FILLED   terminal, fully filled
-           TERMINAL canceled / expired / rejected (filled_qty may be > 0)
-           UNKNOWN  lookup failed, unrecognised status, or unparseable fill
+    state: NONE      no order reference recorded
+           OPEN      can still execute (may be partially filled)
+           FILLED    terminal, fully filled
+           TERMINAL  canceled / expired / rejected (filled_qty may be > 0)
+           NOT_FOUND broker positively says no such order (404)
+           UNKNOWN   lookup failed, unrecognised status, or unparseable fill qty
     filled_qty is the broker's CUMULATIVE filled quantity. "Not open" is never
-    interpreted as "filled": only filled_qty > 0 counts as a sale."""
+    interpreted as "filled": only filled_qty > 0 counts as a sale.
+    avg_price is None unless the broker reported a finite, positive
+    filled_avg_price — quantity evidence and price evidence are separate."""
     if not order_id:
         return {"state": "NONE", "status": None, "qty": None, "filled_qty": 0.0, "avg_price": None}
     try:
-        order = trading_client.get_order_by_id(order_id)
+        order = _order_lookup(order_id)
         status = order.status.value if hasattr(order.status, "value") else str(order.status)
         filled = float(order.filled_qty or 0)
         qty = float(order.qty) if getattr(order, "qty", None) not in (None, "") else None
         avg_raw = getattr(order, "filled_avg_price", None)
-        avg = float(avg_raw) if avg_raw not in (None, "") else None
+        oid = str(getattr(order, "id", "") or "") or None
     except Exception as e:
-        return {"state": "UNKNOWN", "status": None, "qty": None, "filled_qty": None,
-                "avg_price": None, "error": str(e)[:200]}
+        return {"state": "NOT_FOUND" if _is_not_found(e) else "UNKNOWN", "status": None, "qty": None,
+                "filled_qty": None, "avg_price": None, "error": str(e)[:200]}
+    try:
+        avg = float(avg_raw) if avg_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        avg = None
+    if avg is not None and (not math.isfinite(avg) or avg <= 0):
+        avg = None
     if not math.isfinite(filled) or filled < 0:
-        return {"state": "UNKNOWN", "status": status, "qty": qty, "filled_qty": None, "avg_price": None}
+        return {"state": "UNKNOWN", "status": status, "qty": qty, "filled_qty": None, "avg_price": None, "id": oid}
     if status in ORDER_OPEN_STATUSES:
         state = "OPEN"
     elif status == "filled":
@@ -441,7 +465,30 @@ def get_order_fill_state(order_id):
         state = "TERMINAL"
     else:
         state = "UNKNOWN"
-    return {"state": state, "status": status, "qty": qty, "filled_qty": filled, "avg_price": avg}
+    return {"state": state, "status": status, "qty": qty, "filled_qty": filled, "avg_price": avg, "id": oid}
+
+
+def _position_qty_strict():
+    """Broker position qty; 0.0 only on a positive 'position does not exist';
+    None when the broker's answer is unknown (NOT flat — see audit P0-2)."""
+    try:
+        return float(trading_client.get_open_position(SYMBOL.replace("/", "")).qty)
+    except Exception as e:
+        return 0.0 if _is_not_found(e) else None
+
+
+def _open_sell_reserved_strict():
+    """BTC still reserved by OPEN sell orders (qty - cumulative filled), or None if unknown."""
+    try:
+        orders = trading_client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
+        total = 0.0
+        for o in orders:
+            side = o.side.value if hasattr(o.side, "value") else str(o.side)
+            if side == "sell":
+                total += max(0.0, float(o.qty or 0) - float(o.filled_qty or 0))
+        return total
+    except Exception:
+        return None
 
 
 def _floor_qty(q, dp=6):
@@ -716,9 +763,14 @@ def get_today_pl(baseline):
 # bid reaches the Target-1 price, the stop is cancelled (confirmed), an IOC
 # limit sell for half is sent at the target price (never sells below it), and
 # the phase advances ONLY by the broker-reported cumulative filled_qty.
-# Accepted trade-off: between the confirmed stop cancel and the stop
-# re-placement in the same call, the position has no resting stop (bounded to
-# one IOC round trip + fill poll). Target 1 is observed at cycle granularity.
+#
+# Protection gap — stated accurately: from the confirmed stop cancel until a
+# replacement stop is accepted, the position has NO resting broker stop. The
+# code does not bound that duration: requests can stall, the process can stop,
+# and replacement can fail. TP_FILL_POLL_S bounds only how long this call waits
+# for the IOC's outcome. Recovery relies on the persisted intent (client order
+# id + state) being reconciled on the next cycle or after a restart.
+# Target 1 is observed at cycle granularity.
 TP_FILL_POLL_S = 5
 
 
@@ -736,6 +788,53 @@ def _scalp_persist_phase1(entry, entry_time, peak, stop_id, stop_price, tp_id, t
                            target1_filled=False, original_qty=original_qty)
 
 
+def _place_validated_stop(qty, stop_price, context):
+    """Validates the FINAL stop candidate against a fresh bid before submitting.
+
+    Returns (stop_order_id, stop_price, action):
+      STOP              stop placed strictly below the bid
+      STOP_UNVALIDATED  no usable bid: the given (pre-existing, never widened)
+                        floor is placed, and flagged as unvalidated
+      RISK_EXIT         the floor is at/above the bid, i.e. the risk threshold
+                        is already breached: a stop there would trigger at once
+                        and its limit could sit above a falling bid (no
+                        effective protection). A market sell is submitted.
+                        The floor is NOT lowered to make an order admissible.
+      RISK_EXIT_UNKNOWN the market sell's outcome is unknown; the position is
+                        re-read next cycle, never assumed flat
+      NONE              nothing to protect
+    NOTE: get_live_quote() carries no timestamp, so a STALE quote cannot be
+    detected here (audit P1-5, still open)."""
+    qty = _floor_qty(qty)
+    if qty <= 0:
+        return None, stop_price, "NONE"
+    quote = get_live_quote()
+    bid = quote[0] if quote else None
+    if bid is None or not math.isfinite(bid) or bid <= 0:
+        log(f"[STRATEGY: SCALP]  No usable bid ({context}) — placing the existing ${stop_price:.2f} floor UNVALIDATED "
+            f"(not widened); it will be re-checked next cycle.")
+        sid, spx = _submit_stop_limit_sell(qty, stop_price)
+        return sid, spx, "STOP_UNVALIDATED"
+    if stop_price < bid:
+        sid, spx = _submit_stop_limit_sell(qty, stop_price)
+        return sid, spx, "STOP"
+    import uuid
+    cid = f"p01x-{uuid.uuid4().hex[:24]}"
+    log(f"[STRATEGY: SCALP] RISK EXIT ({context}): stop floor ${stop_price:.2f} is at/above the bid ${bid:.2f} — "
+        f"the risk threshold is already breached, so a stop there would trigger immediately and could rest unfilled. "
+        f"Market-selling {qty:.6f} BTC instead; the floor is NOT widened. client id {cid}.")
+    try:
+        order = trading_client.submit_order(MarketOrderRequest(
+            symbol=SYMBOL, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC, client_order_id=cid,
+        ))
+        log(f"[STRATEGY: SCALP]  Risk-exit market sell submitted — id {order.id}.")
+        return None, stop_price, "RISK_EXIT"
+    except Exception as e:
+        log(f"[STRATEGY: SCALP]  Risk-exit submission outcome UNKNOWN ({e}) — NOT assumed filled or rejected; "
+            f"the position is re-read and re-protected next cycle.")
+        return None, stop_price, "RISK_EXIT_UNKNOWN"
+
+
 def _ensure_stop_covers(stop_id, qty, stop_price):
     """Keep the resting stop covering `qty`. Re-place only if it's missing or
     short AND the old one is confirmed cancelled (never double-reserve)."""
@@ -748,102 +847,140 @@ def _ensure_stop_covers(stop_id, qty, stop_price):
         if not cancel_and_confirm(stop_id):
             log("[STRATEGY: SCALP]  Stop covers less than the position but its cancellation couldn't be confirmed — leaving it; retry next cycle.")
             return stop_id, stop_price
-    return _submit_stop_limit_sell(qty, stop_price)
+    sid, spx, _ = _place_validated_stop(qty, stop_price, "stop coverage")
+    return sid, spx
 
 
-def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_order_id, fs, remaining_qty):
+def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs, fallback_remaining):
     """Advance to phase 2 using the CONFIRMED filled quantity only."""
     sold = float(fs["filled_qty"])
     tp_price = pos_state.get("take_profit_price") or entry
-    fill_price = fs.get("avg_price") or tp_price
     reason = "target1" if fs["state"] == "FILLED" else "target1_partial"
-    trade = db.log_trade(SYMBOL, "SCALP", entry_price=entry, exit_price=fill_price, qty=sold,
+    avg = fs.get("avg_price")
+    if avg is not None:
+        exit_price, slippage, note = avg, abs(avg - tp_price), ""
+    else:
+        # Quantity is confirmed, price is not. Never record the intended target
+        # as a verified execution price.
+        exit_price, slippage = tp_price, None
+        reason += "_price_unconfirmed"
+        note = (" EXIT PRICE UNCONFIRMED: broker reported no valid filled_avg_price, so the row uses the TARGET "
+                "price as an ESTIMATE, P&L is an estimate and slippage is unknown — reconcile against broker activities.")
+    trade = db.log_trade(SYMBOL, "SCALP", entry_price=entry, exit_price=exit_price, qty=sold,
                           entry_time=entry_time, exit_time=datetime.now(timezone.utc).isoformat(),
-                          exit_reason=reason, slippage=abs(fill_price - tp_price))
-    log(f"[STRATEGY: SCALP] Target 1 CONFIRMED — order {tp_order_id} {fs.get('status')}, filled {sold:.6f} BTC @ ${fill_price:.2f}. "
-        f"Trade logged — gross ${trade['gross_pnl']:.2f}, fees ${trade['fees_paid']:.2f}, net ${trade['net_pnl']:.2f}.")
+                          exit_reason=reason, slippage=slippage)
+    log(f"[STRATEGY: SCALP] Target 1 CONFIRMED — order {fs.get('id') or tp_ref} {fs.get('status')}, filled {sold:.6f} BTC "
+        f"{'@ $' + format(avg, '.2f') if avg is not None else '(price unconfirmed)'}. "
+        f"Trade logged ({reason}) — gross ${trade['gross_pnl']:.2f}, fees ${trade['fees_paid']:.2f}, net ${trade['net_pnl']:.2f}.{note}")
     if stop_id and stop_order_still_open(stop_id) and not cancel_and_confirm(stop_id):
         log("[STRATEGY: SCALP]  Couldn't confirm the old stop was cancelled — keeping it (it still protects its quantity); breakeven stop will be placed next cycle.")
         db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=stop_id, stop_price=pos_state.get("stop_price"),
                                entry_time=entry_time, peak_price=peak, take_profit_order_id=None, take_profit_price=None,
                                entry_strategy="SCALP", target1_filled=True, original_qty=pos_state.get("original_qty"))
         return
-    remaining_qty = _floor_qty(remaining_qty)
+    actual = _position_qty_strict()                     # size protection from the broker, not arithmetic
+    remaining_qty = _floor_qty(actual if actual is not None else fallback_remaining)
     if remaining_qty <= 0:
         db.clear_position_state(SYMBOL)
         return
     breakeven_price = round(entry * strategies.SCALP_BREAKEVEN_MULT, 2)
-    # Never rest a stop at/above the market: it would trigger at once, and its
-    # limit (stop * (1 - STOP_LIMIT_SLIPPAGE_PCT)) could sit above a falling
-    # bid, leaving the triggered order unfilled = no effective protection.
-    # If the bid is below breakeven, or unknown, keep the prior stop price (the
-    # floor that was already protecting this position); trailing raises it later.
+    prior_stop = pos_state.get("stop_price")
     quote = get_live_quote()
     bid = quote[0] if quote else None
-    prior_stop = pos_state.get("stop_price")
     if bid is not None and breakeven_price < bid:
-        target_stop = breakeven_price
-    else:
-        target_stop = prior_stop if prior_stop else breakeven_price
+        candidate = breakeven_price
+    elif prior_stop:
+        candidate = prior_stop                          # existing floor; validated below, never widened
         log(f"[STRATEGY: SCALP]  Breakeven ${breakeven_price:.2f} is not below the "
-            f"{'current bid $' + format(bid, '.2f') if bid is not None else 'unavailable bid'} — "
-            f"keeping prior stop ${target_stop:.2f} instead of placing a stop above the market.")
-    new_stop_id, new_stop_price = _submit_stop_limit_sell(remaining_qty, target_stop)
-    db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=new_stop_id, stop_price=new_stop_price,
+            f"{'bid $' + format(bid, '.2f') if bid is not None else 'unavailable bid'} — candidate is the prior stop ${prior_stop:.2f}.")
+    else:
+        candidate = breakeven_price                     # no prior floor exists; validated below
+    new_stop_id, new_stop_price, action = _place_validated_stop(remaining_qty, candidate, "post-Target-1")
+    db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=new_stop_id, stop_price=candidate,
                            entry_time=entry_time, peak_price=peak, take_profit_order_id=None, take_profit_price=None,
                            entry_strategy="SCALP", target1_filled=True, original_qty=pos_state.get("original_qty"))
-    log(f"[STRATEGY: SCALP] Remaining {remaining_qty:.6f} BTC stop set to ${new_stop_price} — now trailing.")
+    log(f"[STRATEGY: SCALP] Remaining {remaining_qty:.6f} BTC: {action} (floor ${candidate:.2f}).")
+
+
+def _scalp_reconcile_tp(pos_state, entry, entry_time, peak, stop_id, stop_price, tp_ref, fs,
+                        expected_qty, tp_qty, tp_price, original_qty, just_submitted):
+    """Decide the next action from the TP order's reconciled state, the ACTUAL
+    broker position and ACTUAL open-order reservations — never from the
+    pre-submission quantity alone. UNKNOWN stays UNKNOWN."""
+    st = fs["state"]
+    if st in ("FILLED", "TERMINAL") and (fs.get("filled_qty") or 0) > 0:
+        _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_ref, fs,
+                                     fallback_remaining=expected_qty - fs["filled_qty"])
+        return
+    if st == "TERMINAL" or (st == "NOT_FOUND" and not just_submitted):
+        # Definitively nothing sold (terminal with 0 filled), or the broker still
+        # has no such order a full cycle after submission: restore full cover.
+        what = f"ended {fs.get('status')} with 0 filled" if st == "TERMINAL" else "does not exist at the broker"
+        log(f"[STRATEGY: SCALP] Target-1 order {tp_ref} {what} — NOT Target 1; keeping full protection.")
+        if just_submitted:
+            new_id, new_px, _ = _place_validated_stop(expected_qty, stop_price, "TP ended unfilled")
+        else:
+            new_id, new_px = _ensure_stop_covers(stop_id, _floor_qty(expected_qty), stop_price)
+        _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, None, tp_price, original_qty)
+        return
+    # OPEN, UNKNOWN, or NOT_FOUND right after submission (may not be visible yet):
+    # never a fill. Protect exactly what the broker shows as held and unreserved.
+    pos = _position_qty_strict()
+    reserved = _open_sell_reserved_strict()
+    if pos is None:
+        log(f"[STRATEGY: SCALP] Target-1 order {tp_ref} is {st} AND the position cannot be read — "
+            f"NOT placing orders from stale quantities. PROTECTION STATUS UNKNOWN; retrying next cycle.")
+        _scalp_persist_phase1(entry, entry_time, peak, stop_id, stop_price, tp_ref, tp_price, original_qty)
+        return
+    if reserved is None:
+        reserved = tp_qty
+        log("[STRATEGY: SCALP]  Open-order reservations unreadable — conservatively assuming the TP still reserves its full quantity.")
+    unreserved = _floor_qty(pos - reserved)
+    new_id, new_px = stop_id, stop_price
+    if unreserved > 0 and not (stop_id and stop_order_still_open(stop_id)):
+        new_id, new_px, _ = _place_validated_stop(unreserved, stop_price, f"TP {st}")
+    _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, tp_ref, tp_price, original_qty)
+    filled_note = f" ({fs.get('filled_qty') or 0:.6f} filled so far)" if st == "OPEN" else ""
+    log(f"[STRATEGY: SCALP] Target-1 order {tp_ref} is {st}{filled_note} — NOT treated as filled; broker shows "
+        f"{pos:.6f} BTC held, {reserved:.6f} reserved; protecting {max(unreserved, 0):.6f}; reconciling next cycle.")
 
 
 def _scalp_execute_target1(pos_state, entry, entry_time, peak, stop_id, stop_price, current_qty, tp_qty, tp_price, original_qty):
     if not cancel_and_confirm(stop_id):
         log("[STRATEGY: SCALP] Target 1 reached, but the full-qty stop's cancellation could not be confirmed — NOT sending the TP (it would oversubscribe BTC / race the stop). Retrying next cycle.")
         return
-    # Stop confirmed gone: record that before submitting anything.
-    _scalp_persist_phase1(entry, entry_time, peak, None, stop_price, None, tp_price, original_qty)
-    tp_order_id = None
+    import uuid
+    cid = f"p01t1-{uuid.uuid4().hex[:24]}"
+    tp_ref = "cid:" + cid
+    # Intent (client order id) is persisted BEFORE submission, so a lost
+    # response, crash or restart can always be reconciled by that identity.
+    _scalp_persist_phase1(entry, entry_time, peak, None, stop_price, tp_ref, tp_price, original_qty)
     try:
         order = trading_client.submit_order(LimitOrderRequest(
             symbol=SYMBOL, qty=tp_qty, side=OrderSide.SELL,
-            time_in_force=TimeInForce.IOC, limit_price=round(tp_price, 2),
+            time_in_force=TimeInForce.IOC, limit_price=round(tp_price, 2), client_order_id=cid,
         ))
-        tp_order_id = str(order.id)
-        _scalp_persist_phase1(entry, entry_time, peak, None, stop_price, tp_order_id, tp_price, original_qty)
-        log(f"[STRATEGY: SCALP] Target 1 reached — IOC limit sell {tp_qty:.6f} BTC @ ${tp_price:.2f} submitted — id {tp_order_id}.")
+        # Response received: track by the broker's own order id (no dependence on
+        # client-id lookup in the normal path); the client id stays the fallback.
+        tp_ref = str(order.id)
+        _scalp_persist_phase1(entry, entry_time, peak, None, stop_price, tp_ref, tp_price, original_qty)
+        log(f"[STRATEGY: SCALP] Target 1 reached — IOC limit sell {tp_qty:.6f} BTC @ ${tp_price:.2f} submitted — id {order.id}, client id {cid}.")
     except Exception as e:
-        log(f"[STRATEGY: SCALP] Target-1 order REJECTED: {e} — nothing sold; NOT Target 1.")
-    fs = {"state": "NONE", "filled_qty": 0.0}
-    if tp_order_id:
-        deadline = time.time() + TP_FILL_POLL_S
-        while True:
-            fs = get_order_fill_state(tp_order_id)
-            if fs["state"] in ("FILLED", "TERMINAL") or time.time() >= deadline:
-                break
-            time.sleep(0.5)
-    if fs["state"] in ("FILLED", "TERMINAL") and (fs.get("filled_qty") or 0) > 0:
-        _scalp_advance_after_target1(pos_state, entry, entry_time, peak, None, tp_order_id, fs,
-                                     remaining_qty=current_qty - fs["filled_qty"])
-        return
-    if fs["state"] in ("NONE", "TERMINAL"):
-        # Nothing sold: restore full protection at the ORIGINAL stop price.
-        new_id, new_px = _submit_stop_limit_sell(current_qty, stop_price)
-        _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, None, tp_price, original_qty)
-        if fs["state"] == "TERMINAL":
-            log(f"[STRATEGY: SCALP] Target-1 order {tp_order_id} ended {fs.get('status')} with 0 filled — NOT Target 1; full stop restored.")
-        return
-    # OPEN or UNKNOWN: the TP may still hold up to tp_qty. Protect only what it
-    # cannot be reserving (conservative: assume the whole tp_qty is reserved).
-    unreserved = _floor_qty(current_qty - tp_qty)
-    new_id, new_px = _submit_stop_limit_sell(unreserved, stop_price) if unreserved > 0 else (None, stop_price)
-    _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, tp_order_id, tp_price, original_qty)
-    log(f"[STRATEGY: SCALP] Target-1 order {tp_order_id} outcome {fs['state']} — NOT treated as filled; "
-        f"stop placed on the unreserved {unreserved:.6f} BTC; will reconcile next cycle.")
+        log(f"[STRATEGY: SCALP] Target-1 submission outcome UNKNOWN ({e}) — NOT treated as rejected; reconciling by client id {cid}.")
+    deadline = time.time() + TP_FILL_POLL_S
+    while True:
+        fs = get_order_fill_state(tp_ref)
+        if fs["state"] in ("FILLED", "TERMINAL") or time.time() >= deadline:
+            break
+        time.sleep(0.5)
+    _scalp_reconcile_tp(pos_state, entry, entry_time, peak, None, stop_price, tp_ref, fs,
+                        current_qty, tp_qty, tp_price, original_qty, just_submitted=True)
 
 
 def _scalp_phase1_manage(pos_state, entry, entry_time, peak, latest_price, stop_id, tp_id, current_qty):
     """Phase 1 (full size held, current_qty > 0). Target 1 advances ONLY on a
     confirmed positive cumulative filled_qty; rejected, missing, canceled,
-    still-working and unknown TP orders never count as fills."""
+    still-working, not-found and unknown TP orders never count as fills."""
     tp_price = pos_state.get("take_profit_price")
     stop_price = pos_state.get("stop_price") or entry
     original_qty = pos_state.get("original_qty") or current_qty
@@ -851,25 +988,8 @@ def _scalp_phase1_manage(pos_state, entry, entry_time, peak, latest_price, stop_
 
     if tp_id:
         fs = get_order_fill_state(tp_id)
-        if fs["state"] in ("FILLED", "TERMINAL") and (fs.get("filled_qty") or 0) > 0:
-            _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp_id, fs,
-                                         remaining_qty=current_qty)
-            return
-        if fs["state"] == "TERMINAL":
-            log(f"[STRATEGY: SCALP] Take-profit order {tp_id} ended {fs['status']} with 0 filled — NOT Target 1. Clearing it and keeping full protection.")
-            new_id, new_px = _ensure_stop_covers(stop_id, _floor_qty(current_qty), stop_price)
-            _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, None, tp_price, original_qty)
-            return
-        # OPEN (possibly partially filled) or UNKNOWN: never a completed fill.
-        filled = fs.get("filled_qty") or 0.0
-        requested = fs.get("qty") or tp_qty
-        reserved = max(0.0, requested - filled) if fs["state"] == "OPEN" else tp_qty
-        unreserved = _floor_qty(current_qty - reserved)
-        log(f"[STRATEGY: SCALP] Take-profit order {tp_id} is {fs['state']}"
-            f"{f' ({filled:.6f} filled so far)' if fs['state'] == 'OPEN' else ''} — not treated as Target 1.")
-        if unreserved > 0 and not stop_order_still_open(stop_id):
-            new_id, new_px = _submit_stop_limit_sell(unreserved, stop_price)
-            _scalp_persist_phase1(entry, entry_time, peak, new_id, new_px, tp_id, tp_price, original_qty)
+        _scalp_reconcile_tp(pos_state, entry, entry_time, peak, stop_id, stop_price, tp_id, fs,
+                            current_qty, tp_qty, tp_price, original_qty, just_submitted=False)
         return
 
     # No TP order in flight: full-qty stop must rest; fire Target 1 if reached.
@@ -1096,8 +1216,10 @@ def main():
                     continue
 
                 if not stop_order_still_open(stop_id):
-                    tracked_stop_price = pos_state.get("stop_price")
-                    new_stop_id, new_stop_price = _submit_stop_limit_sell(current_qty, tracked_stop_price or entry)
+                    tracked_stop_price = pos_state.get("stop_price") or entry
+                    # P0-1 review: validate against the bid; a breached floor means risk exit, not an above-market stop.
+                    new_stop_id, _, _action = _place_validated_stop(current_qty, tracked_stop_price, "runner stop missing")
+                    new_stop_price = tracked_stop_price
                     db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=new_stop_id, stop_price=new_stop_price,
                                            entry_time=entry_time, peak_price=peak, entry_strategy="SCALP",
                                            target1_filled=True, original_qty=pos_state.get("original_qty"))

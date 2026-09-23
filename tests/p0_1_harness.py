@@ -99,6 +99,11 @@ class Broker:
         self.unknown_ids = set()
         self.next_tp = ("open",)
         self._n = 0
+        # Review follow-up (2026-09-23): lost-response modelling.
+        self.lose_response_kinds = set()   # e.g. {"limit"}: order is ACCEPTED/EXECUTED, then submit raises
+        self.drop_order_kinds = set()      # order never reaches the broker, submit raises (truly not placed)
+        self.reject_kinds_once = set()     # next submit of this kind is rejected outright (nothing placed)
+        self.client_lookup_fails = False   # get_order_by_client_id raises a timeout (unknown)
 
     # --- helpers for tests
     def add_order(self, oid, kind, qty, status="new", filled=0.0, avg=None, **extra):
@@ -122,6 +127,18 @@ class Broker:
 
     def submit_order(self, req):
         self.submitted.append(req)
+        kind = getattr(req, "_kind", None)
+        if kind in self.reject_kinds_once:
+            self.reject_kinds_once.discard(kind)
+            raise Exception('{"code":42210000,"message":"order rejected by fake broker"}')
+        if kind in self.drop_order_kinds:
+            raise TimeoutError("fake broker: request timed out before the order was accepted")
+        result = self._accept(req)
+        if kind in self.lose_response_kinds:
+            raise TimeoutError("fake broker: order accepted, but the response was lost")
+        return result
+
+    def _accept(self, req):
         self._n += 1
         oid = f"o{self._n}"
         if req.side == "sell":
@@ -132,7 +149,8 @@ class Broker:
                 self.rejections.append(msg)
                 raise Exception(msg)
         if req._kind == "stop_limit":
-            self.add_order(oid, "stop_limit", float(req.qty), stop_price=req.stop_price, limit_price=req.limit_price)
+            self.add_order(oid, "stop_limit", float(req.qty), stop_price=req.stop_price, limit_price=req.limit_price,
+                           client_order_id=getattr(req, "client_order_id", None))
         elif req._kind == "limit" and req.side == "sell":
             beh = self.next_tp
             if beh[0] == "reject":
@@ -142,6 +160,7 @@ class Broker:
                               "partial_open": ("partially_filled", beh[1] if len(beh) > 1 else 0.0),
                               "open": ("new", 0.0), "unknown": ("new", 0.0)}[beh[0]]
             self.add_order(oid, "limit", float(req.qty), status=status, filled=filled,
+                           client_order_id=getattr(req, "client_order_id", None),
                            avg=req.limit_price if filled else None, limit_price=req.limit_price,
                            time_in_force=getattr(req, "time_in_force", None))
             self.qty -= filled
@@ -149,9 +168,20 @@ class Broker:
                 self.unknown_ids.add(oid)
         elif req._kind == "market":
             fill = float(req.qty)
-            self.add_order(oid, "market", fill, status="filled", filled=fill, avg=self.bid)
+            self.add_order(oid, "market", fill, status="filled", filled=fill, avg=self.bid,
+                           client_order_id=getattr(req, "client_order_id", None))
             self.qty -= fill
         return NS(id=oid, legs=[])
+
+    def get_order_by_client_id(self, cid):
+        if self.client_lookup_fails:
+            raise TimeoutError("fake broker: client-id lookup timed out")
+        for o in self.orders.values():
+            if getattr(o, "client_order_id", None) == cid:
+                if o.id in self.unknown_ids:
+                    raise TimeoutError("fake broker: order lookup failed")
+                return o
+        raise Exception('{"code":40410000,"message":"order not found for client_order_id"}')
 
     def get_order_by_id(self, oid):
         if oid in self.unknown_ids or oid not in self.orders:
