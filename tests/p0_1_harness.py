@@ -63,6 +63,10 @@ class MemoryDB:
         self.baseline = {"day_stamp": "2026-09-23", "breaker_tripped_stamp": None, "eod_flattened_stamp": None}
 
     def get_position_state(self, s): return copy.deepcopy(self.states.get(s, {}))
+    # Stage 5 (additive fixture): persisted pending-liquidation state; full-overwrite like position_state.
+    def get_liquidation_state(self, s): return copy.deepcopy(getattr(self, 'liquidations', {}).get(s, {}))
+    def set_liquidation_state(self, s, **kw): self.__dict__.setdefault('liquidations', {})[s] = dict(kw)
+    def clear_liquidation_state(self, s): self.__dict__.setdefault('liquidations', {}).pop(s, None)
     def set_position_state(self, s, **kw): self.states[s] = kw
     def clear_position_state(self, s): self.states[s] = {}
     def log_activity(self, *a, **k): self.events.append(a)

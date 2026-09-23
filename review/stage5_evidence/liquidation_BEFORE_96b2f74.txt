@@ -1,0 +1,142 @@
+test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle (test_stage5_liquidation.A_PartialAcrossCycles) ... FAIL
+test_partial_flatten_keeps_liquidation_pending_until_flat (test_stage5_liquidation.A_PartialAcrossCycles) ... FAIL
+test_other_open_sells_are_cancelled_and_confirmed_before_reselling (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_working_sell_is_reconciled_not_repeated (test_stage5_liquidation.B_OutstandingExitOrder) ... FAIL
+test_pending_liquidation_survives_restart (test_stage5_liquidation.C_RestartRecovery) ... FAIL
+test_restart_after_submit_before_id_persisted_does_not_double_sell (test_stage5_liquidation.C_RestartRecovery)
+Crash between submitting the liquidation sell and recording its id: the order is found by its ... FAIL
+test_eventual_confirmed_flat_after_failures_completes (test_stage5_liquidation.D_IntermittentPositionReads) ... FAIL
+test_stale_read_does_not_size_a_protective_stop_after_partial (test_stage5_liquidation.D_IntermittentPositionReads) ... FAIL
+test_success_then_failed_read_is_not_a_quantity (test_stage5_liquidation.D_IntermittentPositionReads)
+verify_sell_filled: a good read (0.3) followed only by failures must return UNKNOWN (None). ... FAIL
+test_unreadable_position_while_pending_takes_no_action_and_no_entry (test_stage5_liquidation.D_IntermittentPositionReads) ... FAIL
+test_liquidation_continues_after_day_rollover_and_blocks_entries (test_stage5_liquidation.E_DayRollover) ... FAIL
+
+======================================================================
+FAIL: test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle (test_stage5_liquidation.A_PartialAcrossCycles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 100, in test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle
+    self.assertEqual([round(float(r.qty), 6) for r in market_sells(ns["_broker"])], [0.5, 0.3, 0.1])
+AssertionError: Lists differ: [0.5] != [0.5, 0.3, 0.1]
+
+Second list contains 2 additional elements.
+First extra element 1:
+0.3
+
+- [0.5]
++ [0.5, 0.3, 0.1]
+
+======================================================================
+FAIL: test_partial_flatten_keeps_liquidation_pending_until_flat (test_stage5_liquidation.A_PartialAcrossCycles)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 83, in test_partial_flatten_keeps_liquidation_pending_until_flat
+    self.assertEqual(ns["_marks"], [], "breaker marked done after a PARTIAL flatten")
+AssertionError: Lists differ: [('crypto', '2026-09-23')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+('crypto', '2026-09-23')
+
+- [('crypto', '2026-09-23')]
++ [] : breaker marked done after a PARTIAL flatten
+
+======================================================================
+FAIL: test_working_sell_is_reconciled_not_repeated (test_stage5_liquidation.B_OutstandingExitOrder)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 111, in test_working_sell_is_reconciled_not_repeated
+    self.assertEqual(b.rejections, [])
+AssertionError: Lists differ: ['{"code":40310000,"message":"insufficient[46 chars])"}'] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+'{"code":40310000,"message":"insufficient balance for BTC (requested: 0.3, available: 0)"}'
+
++ []
+- ['{"code":40310000,"message":"insufficient balance for BTC (requested: 0.3, '
+-  'available: 0)"}']
+
+======================================================================
+FAIL: test_pending_liquidation_survives_restart (test_stage5_liquidation.C_RestartRecovery)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 140, in test_pending_liquidation_survives_restart
+    self.assertTrue(pending(ns))
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_restart_after_submit_before_id_persisted_does_not_double_sell (test_stage5_liquidation.C_RestartRecovery)
+Crash between submitting the liquidation sell and recording its id: the order is found by its
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 155, in test_restart_after_submit_before_id_persisted_does_not_double_sell
+    self.assertTrue(liq and liq.get("client_order_id"), "liquidation intent has no client order id")
+AssertionError: None is not true : liquidation intent has no client order id
+
+======================================================================
+FAIL: test_eventual_confirmed_flat_after_failures_completes (test_stage5_liquidation.D_IntermittentPositionReads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 205, in test_eventual_confirmed_flat_after_failures_completes
+    self.assertEqual(ns["_marks"], [], "flat assumed without a confirmed read")
+AssertionError: Lists differ: [('crypto', '2026-09-23')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+('crypto', '2026-09-23')
+
+- [('crypto', '2026-09-23')]
++ [] : flat assumed without a confirmed read
+
+======================================================================
+FAIL: test_stale_read_does_not_size_a_protective_stop_after_partial (test_stage5_liquidation.D_IntermittentPositionReads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 177, in test_stale_read_does_not_size_a_protective_stop_after_partial
+    self.assertEqual(stops_submitted(b), [], "a stop was sized from a stale position read")
+AssertionError: Lists differ: [namespace(_kind='stop_limit', symbol='BTC[81 chars].53)] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(_kind='stop_limit', symbol='BTC/USD', qty=0.3, side='sell', time_in_force='gtc', stop_price=95.0, limit_price=94.53)
+
++ []
+- [namespace(_kind='stop_limit',
+-            symbol='BTC/USD',
+-            qty=0.3,
+-            side='sell',
+-            time_in_force='gtc',
+-            stop_price=95.0,
+-            limit_price=94.53)] : a stop was sized from a stale position read
+
+======================================================================
+FAIL: test_success_then_failed_read_is_not_a_quantity (test_stage5_liquidation.D_IntermittentPositionReads)
+verify_sell_filled: a good read (0.3) followed only by failures must return UNKNOWN (None).
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 169, in test_success_then_failed_read_is_not_a_quantity
+    self.assertIsNone(ns["verify_sell_filled"](0.5), "stale 0.3 returned after the latest read failed")
+AssertionError: 0.3 is not None : stale 0.3 returned after the latest read failed
+
+======================================================================
+FAIL: test_unreadable_position_while_pending_takes_no_action_and_no_entry (test_stage5_liquidation.D_IntermittentPositionReads)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 190, in test_unreadable_position_while_pending_takes_no_action_and_no_entry
+    self.assertTrue(pending(ns))
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_liquidation_continues_after_day_rollover_and_blocks_entries (test_stage5_liquidation.E_DayRollover)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5_liquidation.py", line 221, in test_liquidation_continues_after_day_rollover_and_blocks_entries
+    self.assertAlmostEqual(b.qty, 0.0, msg="residual not liquidated after the day rolled over")
+AssertionError: 0.3 != 0.0 within 7 places (0.3 difference) : residual not liquidated after the day rolled over
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.160s
+
+FAILED (failures=10)
