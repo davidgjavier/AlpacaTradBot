@@ -303,3 +303,45 @@ class F5_PersistenceFailure(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class F5b_StoreReadFailureAfterPost(unittest.TestCase):
+    """Found in self-review of the round-2 fix: store READS were unwrapped, so a read failure
+    after the POST could still escape as an exception."""
+
+    def break_reads_after(self, gw, ok_calls):
+        real_get, n = gw.store.get, {"k": 0}
+
+        def flaky_get(cid):
+            n["k"] += 1
+            if n["k"] > ok_calls:
+                raise T.sqlite_error()
+            return real_get(cid)
+        gw.store.get = flaky_get
+
+    def test_ambiguous_post_then_store_reads_fail_returns_unresolved(self):
+        b, c, gw, clk, db = make2()
+        b.post = [("status", 504, T.J504)]
+        self.break_reads_after(gw, ok_calls=1)          # the pre-POST existence check succeeds
+        r, err = call_safely(lambda: gw.submit(T.req("r-f5e"), "test"))
+        self.assertIsNone(err, f"post-POST read failure escaped: {err!r}")
+        self.assertEqual(r.state, "UNRESOLVED")
+        self.assertIs(r.persisted, False)
+        self.assertEqual(len(posts(b)), 1)
+        self.assertIn("r-f5e", [x["client_order_id"] for x in B.IntentStore(db).pending()])
+
+    def test_rejected_post_then_store_reads_fail_still_no_exception(self):
+        b, c, gw, clk, db = make2()
+        b.post = [("status", 403, T.J403)]
+        self.break_reads_after(gw, ok_calls=1)
+        r, err = call_safely(lambda: gw.submit(T.req("r-f5f"), "test"))
+        self.assertIsNone(err, f"post-POST read failure escaped: {err!r}")
+        self.assertEqual(len(posts(b)), 1)
+        self.assertIn(r.state, ("REJECTED", "UNRESOLVED"))
+
+    def test_pre_post_read_failure_is_not_submitted(self):
+        b, c, gw, clk, db = make2()
+        self.break_reads_after(gw, ok_calls=0)
+        r, err = call_safely(lambda: gw.submit(T.req("r-f5g"), "test"))
+        self.assertIsNone(err, f"pre-POST read failure raised: {err!r}")
+        self.assertEqual((r.state, len(posts(b))), ("NOT_SUBMITTED", 0))

@@ -1,5 +1,7 @@
 # Proposed SDK configuration for the crypto bot (P8 follow-up) — PROPOSAL ONLY
 
+> **Round 2 update (branch `review/p8-sdk-wrapper`):** submission and reconciliation semantics changed; see `../ROUND2_REVIEW.md`. Timeout/deadline and paper-plan items remain OPEN.
+
 - **Status:** nothing here is applied to any trading file, running service, or installed package.
 - **Code:** `broker_io.py` (wrapper) and `test_broker_io.py` (30 offline tests, all passing; results in
   `test_results.txt`).
@@ -51,9 +53,10 @@ attributes at startup and **fails closed** on any mismatch. The SDK version shou
   - call `reconcile()` on following cycles.
 
   **It must not call `submit()` again with a new id.**
-- `NOT_FOUND_AFTER_WINDOW` → absence is *inferred* (lookup and list both negative after 30 s). Only then
-  may the caller call `resubmit()`, which reconciles again first and re-POSTs with the **same** id and
-  payload.
+- **SUPERSEDED (round 2):** `NOT_FOUND_AFTER_WINDOW` is retired and `resubmit()` never POSTs. Negative
+  evidence, elapsed time and incomplete listings do not prove absence. See `../ROUND2_REVIEW.md` for the
+  current states (`ACCEPTED`, `REJECTED`, `UNRESOLVED`, `NOT_SUBMITTED`, `CONFLICT`), the `persisted`
+  flag, and caller requirements.
 - **On startup:** `recover_pending()` reconciles every intent left in `SUBMITTING` or `UNRESOLVED`. It
   never re-POSTs.
 
@@ -68,7 +71,7 @@ is the Codex work item. The client id is the natural key for that link.
 | A. Configuration | Retries disabled on the gateway client; timeout tuple reaches the transport; fails closed on version or attribute mismatch; unconfigured client refused | pass |
 | B. Submissions | 504 and 429 give **1 POST**, then `UNRESOLVED`. Accepted-then-504, read-timeout or reset gives `ACCEPTED` via the same id, 1 POST, 1 order. 403 gives `REJECTED`. Non-JSON 504 doesn't crash. Missing client id refused before any POST. A repeated `submit()` never re-POSTs. Same id with a different payload is refused | pass |
 | C. Persistence | Intent-write failure means **0 POSTs**. A record failure after an accepted POST leaves the row `SUBMITTING`; `recover_pending()` gives `ACCEPTED` with 1 POST total | pass |
-| D. Reconcile and resubmit | Crash before the POST: `UNRESOLVED` inside the window, no POST. After the window, lookup plus list confirm absence, then **exactly one** resubmit with the same id. Crash after an accepted POST: `ACCEPTED`, 0 POSTs. Delayed visibility: found by the list. Lookup or list unavailable: stays `UNRESOLVED`, never "absent" | pass |
+| D. Reconcile and resubmit | Crash before the POST: `UNRESOLVED` inside the window, no POST. ~~After the window, lookup plus list confirm absence, then exactly one resubmit~~ **superseded in round 2: no POST; stays UNRESOLVED and queued.** Crash after an accepted POST: `ACCEPTED`, 0 POSTs. Delayed visibility: found by the list. Lookup or list unavailable: stays `UNRESOLVED`, never "absent" | pass |
 | E. Reads | Bounded by deadline and attempt count. Structured 404/40410000 is `NOT_FOUND` on the first attempt. Free-text "not found" is `UNAVAILABLE`. Transient-then-OK recovers. 401 is `ERROR` (not retried). Cancel: 204 means `CANCEL_REQUEST_ACCEPTED` (order still `pending_cancel`); 422 means `NOT_CANCELABLE` via the structured status | pass |
 | F. Real socket | A silent loopback server raises `ReadTimeout` at **1.50 s**. With the stock SDK the same setup blocked for the full 8 s | pass |
 | G. Fresh process | Process A dies after the broker accepted the order, before recording. Process B recovers `ACCEPTED` with **0 POSTs and 1 broker order** | pass |
@@ -80,7 +83,7 @@ one of them, the blind retry silently created a second order that the SDK report
 ## Assumptions still requiring paper observation (P3/P4/P7)
 
 - Alpaca's response to a repeated `client_order_id`. The gateway never depends on it, because it never
-  re-POSTs an id that might exist, except after `NOT_FOUND_AFTER_WINDOW`.
+  re-POSTs an id that might exist, and in round 2 never re-POSTs any id.
 - The 30 s visibility window. It's a placeholder, not a measured value.
 - That 404 + 40410000 is returned for an unknown client id.
 - Whether a 429 on POST ever coincides with acceptance. The gateway treats it as ambiguous either way.

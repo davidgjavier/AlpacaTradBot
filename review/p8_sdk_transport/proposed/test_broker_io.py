@@ -282,9 +282,10 @@ class C_Persistence(unittest.TestCase):
             if op == "create_submitting":
                 raise sqlite_error()
         s.fail_hook = fail
-        with self.assertRaises(B.PersistenceError):
-            gw.submit(req("t-c1"), "test")
-        self.assertEqual(b.posts(), [])
+        # CHANGED (round 2, finding 5): an explicit NOT_SUBMITTED result replaces the exception.
+        r = gw.submit(req("t-c1"), "test")
+        self.assertEqual((r.state, r.persisted), ("NOT_SUBMITTED", False))
+        self.assertEqual(b.posts(), [])                           # safety assertion unchanged
 
     def test_record_failure_after_accepted_post_is_recovered(self):
         b, c, s, gw, clk = make()
@@ -295,9 +296,10 @@ class C_Persistence(unittest.TestCase):
                 state["n"] += 1
                 raise sqlite_error()
         s.fail_hook = fail
-        with self.assertRaises(B.PersistenceError):
-            gw.submit(req("t-c2"), "test")
-        self.assertEqual(s.get("t-c2")["state"], "SUBMITTING")     # intent survived
+        # CHANGED (round 2, finding 5): the accepted order is RETURNED with its identity, not raised.
+        r = gw.submit(req("t-c2"), "test")
+        self.assertEqual((r.state, r.order_id, r.persisted), ("ACCEPTED", b.orders[0]["id"], False))
+        self.assertEqual(s.get("t-c2")["state"], "SUBMITTING")     # intent survived (unchanged)
         s.fail_hook = None
         rec = gw.recover_pending()
         self.assertEqual([r.state for r in rec], ["ACCEPTED"])
@@ -322,10 +324,14 @@ class D_ReconcileAndResubmit(unittest.TestCase):
         self.assertEqual(gw2.resubmit(req("t-d1")).state, "UNRESOLVED")   # still inside window: no POST
         self.assertEqual(b.posts(), [])
         clk.t += 31
-        r = gw2.resubmit(req("t-d1"))                            # reconcile (lookup+list) first, then POST
-        self.assertEqual((r.state, len(b.posts())), ("ACCEPTED", 1))
-        self.assertEqual(json.loads(json.dumps(b.orders))[0]["client_order_id"], "t-d1")
-        self.assertEqual(s2.get("t-d1")["submit_attempts"], 2)
+        # CHANGED (round 2, finding 3 + policy): elapsed time and negative lookup/list no longer
+        # authorize a POST. The intent stays UNRESOLVED and queued; resolving an intent that truly
+        # never reached the broker now requires an explicit human decision (not automated).
+        r = gw2.resubmit(req("t-d1"))
+        self.assertEqual((r.state, len(b.posts())), ("UNRESOLVED", 0))
+        self.assertEqual(b.orders, [])
+        self.assertIn("t-d1", [x["client_order_id"] for x in s2.pending()])
+        self.assertEqual(s2.get("t-d1")["submit_attempts"], 1)
 
     def test_crash_after_accepted_post_restart_reconciles_without_post(self):
         db = os.path.join(tempfile.mkdtemp(), "i.db")
