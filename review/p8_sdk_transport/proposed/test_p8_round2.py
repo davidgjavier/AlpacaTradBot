@@ -344,4 +344,8 @@ class F5b_StoreReadFailureAfterPost(unittest.TestCase):
         self.break_reads_after(gw, ok_calls=0)
         r, err = call_safely(lambda: gw.submit(T.req("r-f5g"), "test"))
         self.assertIsNone(err, f"pre-POST read failure raised: {err!r}")
-        self.assertEqual((r.state, len(posts(b))), ("NOT_SUBMITTED", 0))
+        # CHANGED (round 3, Codex-reproduced defect): unreadable prior history is NOT evidence that
+        # the id was never submitted. Expect UNRESOLVED with exposure possible; still 0 POSTs.
+        self.assertEqual((r.state, len(posts(b))), ("UNRESOLVED", 0))
+        self.assertTrue(r.exposure_may_exist)
+        self.assertIs(r.persisted, False)

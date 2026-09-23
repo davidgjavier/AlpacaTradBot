@@ -35,6 +35,7 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -198,21 +199,30 @@ CREATE TABLE IF NOT EXISTS order_intents (
   payload TEXT NOT NULL, payload_sha TEXT NOT NULL, state TEXT NOT NULL,
   order_id TEXT, submit_attempts INTEGER NOT NULL DEFAULT 0,
   created_ns INTEGER NOT NULL, last_submit_ns INTEGER, updated_ns INTEGER NOT NULL, last_error TEXT);
+CREATE TABLE IF NOT EXISTS intent_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, client_order_id TEXT NOT NULL, ts_ns INTEGER NOT NULL,
+  kind TEXT NOT NULL, from_state TEXT, to_state TEXT, operator TEXT, note TEXT, detail TEXT);
 """
-# States (round 2):
-#   SUBMITTING  intent durable; the POST may or may not have reached the broker
-#   ACCEPTED    broker order id known (terminal for this layer)
+INTENT_MIGRATIONS = [("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER"), ("abandoned_by", "TEXT"),
+                     ("abandoned_ns", "INTEGER"), ("lock_released_by", "TEXT"), ("lock_released_ns", "INTEGER"),
+                     ("conflict_detail", "TEXT")]
+# States (round 3):
+#   SUBMITTING  intent durable; the single POST may or may not have reached the broker
+#   ACCEPTED    one broker order, identity matches the intent (terminal for this layer)
 #   REJECTED    definitive 4xx on the ONLY POST ever made for this id (terminal)
-#   UNRESOLVED  outcome unknown; stays in the recovery queue until broker evidence appears
-# Allowed transitions (compare-and-set; anything else is refused):
-#   SUBMITTING -> ACCEPTED | REJECTED(only if submit_attempts == 1) | UNRESOLVED
-#   UNRESOLVED -> ACCEPTED | UNRESOLVED
-#   ACCEPTED / REJECTED -> (none)
-# Retired: NOT_FOUND_AFTER_WINDOW (absence is never inferred; legacy rows are treated as UNRESOLVED).
-PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")
-_ALLOWED_FROM = {"ACCEPTED": ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"),
+#   UNRESOLVED  outcome unknown; monitored; entries locked
+#   CONFLICT    broker evidence contradicts the intent (identity mismatch, >1 order for the id,
+#               or a late order after abandonment); monitored; entries locked; human only
+#   ABANDONED   operator declared the intent abandoned; STILL monitored for a late order;
+#               entries stay locked until a separate, explicit release_entry_lock()
+# Transitions are compare-and-set and every one appends to intent_events (history is never erased).
+PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW", "CONFLICT", "ABANDONED")
+_OPEN = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")
+_ALLOWED_FROM = {"ACCEPTED": _OPEN,
                  "REJECTED": ("SUBMITTING",),
-                 "UNRESOLVED": ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")}
+                 "UNRESOLVED": _OPEN,
+                 "CONFLICT": _OPEN + ("ABANDONED",),
+                 "ABANDONED": ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")}
 
 
 class IntentStore:
@@ -220,6 +230,10 @@ class IntentStore:
         self.path, self.fail_hook = path, fail_hook
         with closing(self._c()) as c:
             c.executescript(INTENT_SCHEMA)
+            have = {r[1] for r in c.execute("PRAGMA table_info(order_intents)")}
+            for name, typ in INTENT_MIGRATIONS:
+                if name not in have:
+                    c.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {typ}")
 
     def _c(self):
         c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -227,22 +241,30 @@ class IntentStore:
         c.execute("PRAGMA synchronous=FULL")      # durable before we act on it
         return c
 
-    def _write(self, op: str, sql: str, args: tuple) -> int:
-        """Returns rowcount. Raises PersistenceError on storage failure;
+    def _txn(self, op: str, fn):
+        """Run fn(conn) in one IMMEDIATE transaction. Raises PersistenceError on storage failure;
         sqlite3.IntegrityError is re-raised unchanged (callers treat it as 'already exists')."""
         try:
             if self.fail_hook:
                 self.fail_hook(op)                 # test fault injection, handled like a real failure
             with closing(self._c()) as c:
                 c.execute("BEGIN IMMEDIATE")
-                cur = c.execute(sql, args)
-                n = cur.rowcount
-                c.execute("COMMIT")
-                return n
+                try:
+                    out = fn(c)
+                    c.execute("COMMIT")
+                    return out
+                except Exception:
+                    c.execute("ROLLBACK")
+                    raise
         except sqlite3.IntegrityError:
             raise
         except Exception as e:  # noqa: BLE001
             raise PersistenceError(f"{op}: {e}") from e
+
+    @staticmethod
+    def _event(c, cid, ts, kind, frm=None, to=None, operator=None, note=None, detail=None):
+        c.execute("INSERT INTO intent_events (client_order_id,ts_ns,kind,from_state,to_state,operator,note,detail)"
+                  " VALUES (?,?,?,?,?,?,?,?)", (cid, ts, kind, frm, to, operator, note, detail))
 
     def get(self, cid: str) -> Optional[dict]:
         with closing(self._c()) as c:
@@ -251,37 +273,83 @@ class IntentStore:
         return dict(r) if r else None
 
     def pending(self) -> list:
-        """The recovery queue: every intent whose broker outcome is not yet known."""
+        """The monitoring queue: every intent whose broker exposure is not settled, INCLUDING
+        CONFLICT and ABANDONED (a late order must still be detected)."""
         with closing(self._c()) as c:
             c.row_factory = sqlite3.Row
             q = "SELECT * FROM order_intents WHERE state IN (%s)" % ",".join("?" * len(PENDING_STATES))
             return [dict(r) for r in c.execute(q, PENDING_STATES)]
 
+    def locking_intents(self, symbol: str) -> list:
+        with closing(self._c()) as c:
+            return [r[0] for r in c.execute(
+                "SELECT client_order_id FROM order_intents WHERE symbol=? AND ("
+                " state IN ('SUBMITTING','UNRESOLVED','NOT_FOUND_AFTER_WINDOW','CONFLICT')"
+                " OR (state='ABANDONED' AND lock_released_ns IS NULL))", (symbol,))]
+
+    def events(self, cid: str) -> list:
+        with closing(self._c()) as c:
+            c.row_factory = sqlite3.Row
+            return [dict(r) for r in c.execute(
+                "SELECT * FROM intent_events WHERE client_order_id=? ORDER BY id", (cid,))]
+
     def create_submitting(self, cid, purpose, symbol, payload, now_ns) -> bool:
         """True if this caller created the intent (and therefore owns the single POST);
         False if the id already exists (another caller owns it). Storage failure raises."""
         pj = json.dumps(payload, sort_keys=True, default=str)
+
+        def fn(c):
+            c.execute("INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
+                      "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
+                      (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
+                       now_ns, now_ns, now_ns))
+            self._event(c, cid, now_ns, "CREATED", None, "SUBMITTING")
         try:
-            self._write("create_submitting",
-                        "INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
-                        "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
-                        (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
-                         now_ns, now_ns, now_ns))
+            self._txn("create_submitting", fn)
             return True
         except sqlite3.IntegrityError:
             return False
 
-    def transition(self, cid, to_state, now_ns, order_id=None, error=None) -> bool:
-        """Compare-and-set. True only if the row was in an allowed source state and was updated.
-        REJECTED additionally requires submit_attempts == 1 (a single, definitive POST)."""
+    def transition(self, cid, to_state, now_ns, order_id=None, error=None, conflict_detail=None) -> bool:
+        """Compare-and-set with an appended history event. True only if the row was in an allowed
+        source state. REJECTED additionally requires submit_attempts == 1."""
         src = _ALLOWED_FROM[to_state]
         extra = " AND submit_attempts = 1" if to_state == "REJECTED" else ""
-        sql = ("UPDATE order_intents SET state=?, order_id=COALESCE(?,order_id), last_error=?, updated_ns=? "
-               "WHERE client_order_id=? AND state IN (%s)%s" % (",".join("?" * len(src)), extra))
-        return self._write(f"mark_{to_state}", sql, (to_state, order_id, error, now_ns, cid) + src) == 1
 
-    # Backwards-compatible alias used by older call sites/tests: now also compare-and-set.
+        def fn(c):
+            row = c.execute("SELECT state FROM order_intents WHERE client_order_id=?", (cid,)).fetchone()
+            frm = row[0] if row else None
+            n = c.execute("UPDATE order_intents SET state=?, order_id=COALESCE(?,order_id), last_error=?, updated_ns=?,"
+                          " conflict_detail=COALESCE(?,conflict_detail)"
+                          " WHERE client_order_id=? AND state IN (%s)%s" % (",".join("?" * len(src)), extra),
+                          (to_state, order_id, error, now_ns, conflict_detail, cid) + src).rowcount
+            if n == 1 and (frm != to_state or to_state != "UNRESOLVED"):
+                self._event(c, cid, now_ns, "TRANSITION", frm, to_state, detail=conflict_detail or error)
+            return n == 1
+        return self._txn(f"mark_{to_state}", fn)
+
+    def operator_action(self, cid, kind, operator, note, now_ns, require_state=None, set_cols=None) -> bool:
+        """Records ACKNOWLEDGED / ABANDONED / LOCK_RELEASED. State change only for ABANDONED."""
+        def fn(c):
+            row = c.execute("SELECT state FROM order_intents WHERE client_order_id=?", (cid,)).fetchone()
+            if row is None or (require_state and row[0] not in require_state):
+                return False
+            frm = row[0]
+            to = "ABANDONED" if kind == "ABANDONED" else frm
+            cols = dict(set_cols or {})
+            cols["updated_ns"] = now_ns
+            if kind == "ABANDONED":
+                cols["state"] = "ABANDONED"
+            sets = ", ".join(f"{k}=?" for k in cols)
+            n = c.execute(f"UPDATE order_intents SET {sets} WHERE client_order_id=? AND state=?",
+                          tuple(cols.values()) + (cid, frm)).rowcount
+            if n == 1:
+                self._event(c, cid, now_ns, kind, frm, to, operator=operator, note=note)
+            return n == 1
+        return self._txn(f"op_{kind}", fn)
+
     def mark(self, cid, state, now_ns, order_id=None, error=None, bump_attempt=False):
+        """Backwards-compatible alias; compare-and-set. Re-submission (attempt bumps) is disabled."""
         if bump_attempt:
             raise PersistenceError("re-submission is disabled; attempts cannot be bumped")
         return self.transition(cid, state, now_ns, order_id=order_id, error=error)
@@ -294,8 +362,82 @@ def new_client_order_id(prefix: str) -> str:
     return cid
 
 
+# ------------------------------------------------------------------ identity validation
+_ENUM_PREFIXES = ("OrderSide", "OrderType", "TimeInForce", "OrderClass", "PositionIntent")
+
+
+def _tok(v) -> Optional[str]:
+    """Normalize enum-ish values: OrderSide.SELL / 'sell' / <OrderSide.SELL: 'sell'> -> 'sell'."""
+    if v is None:
+        return None
+    s = str(getattr(v, "value", v)).strip()
+    if "." in s and s.split(".")[0] in _ENUM_PREFIXES:
+        s = s.split(".", 1)[1]
+    return s.lower()
+
+
+def _sym(v) -> Optional[str]:
+    """Broker may report BTC/USD as BTCUSD (Alpaca position/asset symbology)."""
+    return None if v is None else str(v).replace("/", "").upper()
+
+
+def _dec(v):
+    if v is None or v == "" or str(v) == "None":
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return "INVALID"
+
+
+def identity_mismatches(intent: dict, order) -> list:
+    """Compare a broker order with the stored intent payload. Numeric fields compare by value,
+    so broker formatting ('0.00020000', '100000.00') is not a mismatch. Qty-versus-notional:
+    a notional intent must match on notional (qty is ignored; Alpaca may leave it null or fill it);
+    a qty intent must match on qty and the broker must not report a notional."""
+    g = (lambda k: getattr(order, k, None)) if not isinstance(order, dict) else order.get
+    out = []
+    if (g("client_order_id") or None) != intent.get("client_order_id"):
+        out.append(f"client_order_id {g('client_order_id')!r}")
+    if _sym(g("symbol")) != _sym(intent.get("symbol")):
+        out.append(f"symbol {g('symbol')!r} != {intent.get('symbol')!r}")
+    for f in ("side", "type", "time_in_force"):
+        bv = g(f) if f != "type" else (g("type") or g("order_type"))
+        if _tok(bv) != _tok(intent.get(f)):
+            out.append(f"{f} {_tok(bv)!r} != {_tok(intent.get(f))!r}")
+    if _dec(intent.get("notional")) is not None:
+        bn = _dec(g("notional"))
+        if bn is None:
+            out.append("notional intent but broker reports no notional (qty-vs-notional)")
+        elif bn != _dec(intent.get("notional")):
+            out.append(f"notional {bn} != {_dec(intent.get('notional'))}")
+    else:
+        bq, iq = _dec(g("qty")), _dec(intent.get("qty"))
+        if bq != iq:
+            out.append(f"qty {bq} != {iq}")
+        if _dec(g("notional")) is not None:
+            out.append("qty intent but broker reports a notional (qty-vs-notional)")
+    for f in ("limit_price", "stop_price"):
+        if _dec(g(f)) != _dec(intent.get(f)):
+            out.append(f"{f} {_dec(g(f))} != {_dec(intent.get(f))}")
+    return out
+
+
+# ------------------------------------------------------------------ bounded positive-evidence scan
+SCAN_PAGE_LIMIT = 500          # Alpaca max per page (GetOrdersRequest.limit)
+SCAN_MAX_PAGES = 3             # hard bound per reconcile; exceeding it is "incomplete", never "absent"
+
+
+@dataclass
+class ScanResult:
+    matches: list
+    complete: bool
+    reason: str
+    pages: int
+
+
 # ------------------------------------------------------------------ submissions
-RESUBMISSION_ENABLED = False   # Round 2 policy: never re-POST an ambiguous intent automatically.
+RESUBMISSION_ENABLED = False   # Never re-POST an ambiguous intent automatically (rounds 2-3 policy).
 
 
 @dataclass
@@ -303,13 +445,16 @@ class SubmitResult:
     """Outcome of one gateway call. Callers MUST read `state` AND `persisted`.
 
     state:
-      ACCEPTED      the broker has this order; `order_id` is set.
+      ACCEPTED      one broker order, identity matches; `order_id` is set.
       REJECTED      the single POST was definitively refused (400/401/403/422 on attempt 1).
       UNRESOLVED    outcome unknown. NOT "not placed". Exposure may exist.
-      NOT_SUBMITTED nothing was sent (intent could not be made durable).
-      CONFLICT      broker evidence contradicts the stored terminal state; needs a human.
-    persisted: False if the result could not be written to the intent store. The intent row then
-      stays in the recovery queue, and recover_pending()/reconcile() will record it later.
+      CONFLICT      broker evidence contradicts the intent (mismatch, several orders, late order).
+      ABANDONED     operator-abandoned, still monitored; exposure still possible.
+      NOT_SUBMITTED nothing was ever sent: intent history was READABLE and empty, and the new intent
+                    could not be stored. Never returned when prior history is unreadable.
+    persisted: False if the store could not be read or written for this result.
+    uniqueness_verified: True only if a COMPLETE bounded scan found exactly this one order for
+      the client id; False if the scan was incomplete; None if no scan ran.
     """
     state: str
     client_order_id: str
@@ -319,21 +464,26 @@ class SubmitResult:
     posts_this_call: int = 0
     persisted: bool = True
     persistence_error: Optional[str] = None
+    broker_order_ids: list = field(default_factory=list)
+    mismatches: list = field(default_factory=list)
+    uniqueness_verified: Optional[bool] = None
 
     @property
     def exposure_may_exist(self) -> bool:
-        return self.state in ("ACCEPTED", "UNRESOLVED", "CONFLICT")
+        return self.state in ("ACCEPTED", "UNRESOLVED", "CONFLICT", "ABANDONED")
 
 
 class OrderGateway:
     def __init__(self, client, store: IntentStore, symbol: str,
                  now_ns: Callable[[], int] = time.time_ns, read_kw: Optional[dict] = None,
-                 visibility_window_s: float = VISIBILITY_WINDOW_S):
+                 visibility_window_s: float = VISIBILITY_WINDOW_S,
+                 scan_max_pages: int = SCAN_MAX_PAGES, scan_page_limit: int = SCAN_PAGE_LIMIT):
         if not getattr(client, "_broker_io_configured", False):
             raise ConfigurationError("client must be passed through configure_client() first")
         self.client, self.store, self.symbol = client, store, symbol
         self.now_ns, self.read_kw = now_ns, (read_kw or {})
         self.window_ns = int(visibility_window_s * 1e9)
+        self.scan_max_pages, self.scan_page_limit = scan_max_pages, scan_page_limit
 
     @staticmethod
     def _payload(order_request) -> dict:
@@ -358,16 +508,19 @@ class OrderGateway:
         st = row["state"] if row else "UNRESOLVED"
         if st == "NOT_FOUND_AFTER_WINDOW":        # legacy state: never trusted as absence
             st = "UNRESOLVED"
-        return SubmitResult(st, cid, order_id=row["order_id"] if row else None, detail=detail,
+        extra = f"; {row['conflict_detail']}" if row and row.get("conflict_detail") and st == "CONFLICT" else ""
+        return SubmitResult(st, cid, order_id=row["order_id"] if row else None, detail=detail + extra,
                             posts_this_call=posts, **kw)
 
-    def _record(self, cid, to_state, order_id=None, error=None):
+    def _record(self, cid, to_state, order_id=None, error=None, conflict_detail=None):
         """(applied, persisted, persistence_error). Never raises."""
         try:
-            return self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error), True, None
+            return (self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error,
+                                          conflict_detail=conflict_detail), True, None)
         except PersistenceError as e:
             return False, False, str(e)
 
+    # ---------------------------------------------------------------- submit
     def submit(self, order_request, purpose: str) -> SubmitResult:
         cid = getattr(order_request, "client_order_id", None)
         if not cid:
@@ -375,8 +528,9 @@ class OrderGateway:
         payload = self._payload(order_request)
         existing, err = self._row(cid)
         if err:
-            return SubmitResult("NOT_SUBMITTED", cid, detail="intent store unreadable; nothing sent",
-                                persisted=False, persistence_error=err)
+            # Prior history is UNREADABLE: this id may already have been submitted. Never report
+            # NOT_SUBMITTED; never POST; keep the id. Use read-only broker evidence if available.
+            return self._unreadable_history(cid, payload, err)
         if existing is not None:
             if existing["payload_sha"] != self._sha(payload):
                 raise ValueError(f"client_order_id {cid} already used with a different payload")
@@ -384,21 +538,33 @@ class OrderGateway:
         try:
             created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
         except PersistenceError as e:
-            return SubmitResult("NOT_SUBMITTED", cid, detail="intent not durable; nothing sent",
+            # History was readable and had no row for this id, so nothing was sent under it.
+            return SubmitResult("NOT_SUBMITTED", cid, detail="no prior intent; new intent not durable; nothing sent",
                                 persisted=False, persistence_error=str(e))
         if not created:                             # another caller won the insert and owns the POST
             return self._from_row(cid, detail="intent owned by another caller; no POST")
-        return self._post_and_record(order_request, cid)
+        return self._post_and_record(order_request, cid, payload)
 
-    def _post_and_record(self, order_request, cid) -> SubmitResult:
+    def _unreadable_history(self, cid, payload, err) -> SubmitResult:
+        base = dict(persisted=False, persistence_error=err)
+        why = "prior intent history unreadable; client id retained; do NOT retry or replace"
+        r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
+        if r.state == "OK":
+            mm = identity_mismatches(json.loads(json.dumps(payload, default=str)), r.value)
+            if mm:
+                return SubmitResult("CONFLICT", cid, order_id=str(r.value.id), order=r.value, mismatches=mm,
+                                    broker_order_ids=[str(r.value.id)], detail=f"{why}; identity mismatch", **base)
+            return SubmitResult("ACCEPTED", cid, order_id=str(r.value.id), order=r.value,
+                                broker_order_ids=[str(r.value.id)], detail=f"{why}; broker has the order", **base)
+        return SubmitResult("UNRESOLVED", cid, detail=f"{why}; broker lookup {r.state}", **base)
+
+    def _post_and_record(self, order_request, cid, payload) -> SubmitResult:
         """The single POST for this id. Never raises after the POST has been attempted."""
         try:
             order = self.client.submit_order(order_request)          # exactly one POST (SDK retry=0)
         except Exception as e:  # noqa: BLE001
             s = _status(e)
             row, _ = self._row(cid)
-            # This caller created the row and resubmission is disabled, so if the row can't be
-            # read, this POST is still known to be the only one for the id.
             attempts = (row or {}).get("submit_attempts", 1)
             if s in DEFINITIVE_REJECT_HTTP and attempts == 1:
                 applied, ok, perr = self._record(cid, "REJECTED", error=f"{s}:{_code(e)}:{str(e)[:160]}")
@@ -406,24 +572,60 @@ class OrderGateway:
                     return self._from_row(cid, detail="state changed concurrently", posts=1)
                 return SubmitResult("REJECTED", cid, detail=f"HTTP {s} on the only POST", posts_this_call=1,
                                     persisted=ok, persistence_error=perr)
-            # Ambiguous (429/5xx/timeout/connection/non-JSON, or a 4xx that is not provably first).
             _, ok, perr = self._record(cid, "UNRESOLVED", error=f"{type(e).__name__}:{s}:{str(e)[:160]}")
             r = self.reconcile(cid)
             r.posts_this_call = 1
-            if not ok and r.persisted:              # the first write failed; report it even if later ones worked
+            if not ok and r.persisted:
                 r.persisted, r.persistence_error = False, perr
             return r
         oid = str(order.id)
+        mm = identity_mismatches(json.loads(json.dumps(payload, default=str)), order)
+        if mm:
+            detail = f"POST response identity mismatch: {'; '.join(mm)}"
+            applied, ok, perr = self._record(cid, "CONFLICT", order_id=oid, error=detail, conflict_detail=detail)
+            return SubmitResult("CONFLICT", cid, order_id=oid, order=order, posts_this_call=1, mismatches=mm,
+                                broker_order_ids=[oid], detail=detail, persisted=ok, persistence_error=perr)
         applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
-        # Known identity is returned even if it could not be saved.
-        return SubmitResult("ACCEPTED", cid, order_id=oid, order=order, posts_this_call=1,
+        return SubmitResult("ACCEPTED", cid, order_id=oid, order=order, posts_this_call=1, broker_order_ids=[oid],
                             persisted=ok, persistence_error=perr,
                             detail="" if ok else "accepted; result NOT saved (row stays in recovery queue)")
 
+    # ---------------------------------------------------------------- evidence
+    def _scan(self, cid, row) -> ScanResult:
+        """Bounded, cursor-paginated order listing for POSITIVE evidence only. Truncation, a failed
+        page, lack of progress, or the page bound all yield complete=False. Absence is never inferred."""
+        from alpaca.common.enums import Sort
+        from alpaca.trading.enums import QueryOrderStatus
+        from alpaca.trading.requests import GetOrdersRequest
+        cursor = datetime.fromtimestamp((row["created_ns"] / 1e9) - 60, tz=timezone.utc)
+        seen, matches = set(), []
+        for page in range(1, self.scan_max_pages + 1):
+            cur = cursor
+            lst = read(lambda: self.client.get_orders(GetOrdersRequest(
+                status=QueryOrderStatus.ALL, after=cur, symbols=[self.symbol], limit=self.scan_page_limit,
+                direction=Sort.ASC)), **self.read_kw)
+            if lst.state != "OK":
+                return ScanResult(matches, False, f"page {page} {lst.state}", page)
+            orders = list(lst.value)
+            new = [o for o in orders if str(o.id) not in seen]
+            for o in new:
+                seen.add(str(o.id))
+                if getattr(o, "client_order_id", None) == cid:
+                    matches.append(o)
+            if len(orders) < self.scan_page_limit:
+                return ScanResult(matches, True, "end of listing", page)
+            stamps = [getattr(o, "created_at", None) or getattr(o, "submitted_at", None) for o in orders]
+            stamps = [s for s in stamps if s is not None]
+            if not new or not stamps:
+                return ScanResult(matches, False, f"no progress at page {page}", page)
+            # Step back 1 µs so equal timestamps at a page edge are re-read (deduplicated by id).
+            cursor = max(stamps) - timedelta(microseconds=1)
+        return ScanResult(matches, False, f"page bound {self.scan_max_pages} reached", self.scan_max_pages)
+
     def reconcile(self, cid) -> SubmitResult:
-        """Resolve an intent from broker evidence. Positive evidence (lookup or list hit) may
-        move it to ACCEPTED. Negative evidence NEVER resolves it: it stays UNRESOLVED and queued.
-        Never raises for storage failures; never downgrades a terminal state."""
+        """Resolve an intent from broker evidence. Only POSITIVE, identity-matching evidence of
+        exactly one order resolves an open intent to ACCEPTED. Negative evidence never resolves
+        anything. CONFLICT and ABANDONED are re-checked (late orders) but never auto-cleared."""
         row, err = self._row(cid)
         if err:
             return SubmitResult("UNRESOLVED", cid, detail=err, persisted=False, persistence_error=err)
@@ -431,42 +633,65 @@ class OrderGateway:
             raise KeyError(cid)
         if row["state"] in ("ACCEPTED", "REJECTED"):
             return self._from_row(cid, detail="already resolved")
+        intent = json.loads(row["payload"])
         r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
-        found = r.value if r.state == "OK" else None
-        how = "found by client id"
-        if found is None and r.state == "NOT_FOUND" and \
-                self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) >= self.window_ns:
-            # Supplementary POSITIVE evidence only; an incomplete/lagging list proves nothing.
-            from alpaca.trading.enums import QueryOrderStatus
-            from alpaca.trading.requests import GetOrdersRequest
-            after = datetime.fromtimestamp((row["created_ns"] / 1e9) - 60, tz=timezone.utc)
-            lst = read(lambda: self.client.get_orders(GetOrdersRequest(
-                status=QueryOrderStatus.ALL, after=after, symbols=[self.symbol], limit=500)), **self.read_kw)
-            if lst.state == "OK":
-                hit = [o for o in lst.value if getattr(o, "client_order_id", None) == cid]
-                if hit:
-                    found, how = hit[0], "found by list"
-        if found is not None:
-            oid = str(found.id)
-            applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
+        candidates, how = {}, []
+        if r.state == "OK":
+            candidates[str(r.value.id)] = r.value
+            how.append("found by client id")
+        aged = self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) >= self.window_ns
+        scan = None
+        if candidates or aged:                      # uniqueness check, or positive evidence after the window
+            scan = self._scan(cid, row)
+            for o in scan.matches:
+                if str(o.id) not in candidates:
+                    candidates[str(o.id)] = o
+                    if "found by list" not in how:
+                        how.append("found by list")
+        ids = sorted(candidates)
+        scan_note = f"scan: {scan.reason}, {scan.pages} page(s)" if scan else "scan: not run"
+        if len(ids) > 1:
+            return self._conflict(cid, row, f"{len(ids)} broker orders share this client id: {', '.join(ids)}",
+                                  ids=ids)
+        if len(ids) == 1:
+            o = candidates[ids[0]]
+            mm = identity_mismatches(intent, o)
+            if mm:
+                return self._conflict(cid, row, f"order {ids[0]} identity mismatch: {'; '.join(mm)}", ids=ids, mm=mm)
+            if row["state"] == "ABANDONED":
+                return self._conflict(cid, row, f"late order {ids[0]} appeared after abandonment", ids=ids)
+            if row["state"] == "CONFLICT":
+                return self._from_row(cid, detail="conflict persists; human resolution required")
+            applied, ok, perr = self._record(cid, "ACCEPTED", order_id=ids[0])
             if ok and not applied:
-                cur = self._from_row(cid, detail="state changed concurrently")
-                if cur.state == "ACCEPTED":
-                    return cur
-                return SubmitResult("CONFLICT", cid, order_id=oid, order=found,
-                                    detail=f"broker has order {oid} but intent is {cur.state}")
-            return SubmitResult("ACCEPTED", cid, order_id=oid, order=found, detail=how,
-                                persisted=ok, persistence_error=perr)
+                return self._from_row(cid, detail="state changed concurrently")
+            uniq = scan.complete if scan and scan.complete is not None else None
+            return SubmitResult("ACCEPTED", cid, order_id=ids[0], order=o, broker_order_ids=ids,
+                                detail=" + ".join(how) if len(how) == 1 else "; ".join(how),
+                                uniqueness_verified=uniq, persisted=ok, persistence_error=perr)
+        # No positive evidence.
+        if row["state"] in ("CONFLICT", "ABANDONED"):
+            return self._from_row(cid, detail=f"no new broker evidence; still {row['state']} ({scan_note})")
         why = {"NOT_FOUND": "no broker evidence yet (NOT proof of absence)",
                "UNAVAILABLE": "lookup UNAVAILABLE", "ERROR": f"lookup ERROR: {r.error}"}.get(r.state, r.state)
+        why = f"{why}; {scan_note}"
         applied, ok, perr = self._record(cid, "UNRESOLVED", error=why)
-        if ok and not applied:                      # a concurrent caller resolved it: report that, don't downgrade
+        if ok and not applied:
             return self._from_row(cid, detail="resolved concurrently")
         return SubmitResult("UNRESOLVED", cid, order_id=row.get("order_id"), detail=why,
-                            persisted=ok, persistence_error=perr)
+                            uniqueness_verified=False if scan else None, persisted=ok, persistence_error=perr)
+
+    def _conflict(self, cid, row, detail, ids=(), mm=()) -> SubmitResult:
+        applied, ok, perr = self._record(cid, "CONFLICT", error=detail, conflict_detail=detail)
+        if ok and not applied and row["state"] != "CONFLICT":
+            cur = self._from_row(cid, detail="state changed concurrently")
+            if cur.state != "UNRESOLVED":
+                return cur
+        return SubmitResult("CONFLICT", cid, order_id=ids[0] if len(ids) == 1 else None, detail=detail,
+                            broker_order_ids=list(ids), mismatches=list(mm), persisted=ok, persistence_error=perr)
 
     def resubmit(self, order_request) -> SubmitResult:
-        """DISABLED (round 2). Elapsed time and negative lookups never authorize another POST.
+        """DISABLED. Elapsed time and negative lookups never authorize another POST.
         Verifies the payload, runs a read-only reconcile, and returns its result. No POST."""
         cid = order_request.client_order_id
         row, err = self._row(cid)
@@ -483,10 +708,81 @@ class OrderGateway:
         return r
 
     def recover_pending(self) -> list:
-        """On startup and every cycle: reconcile each queued intent. Never POSTs."""
+        """At startup and every cycle: re-check every monitored intent (incl. CONFLICT/ABANDONED).
+        Never POSTs."""
         try:
             rows = self.store.pending()
         except Exception as e:  # noqa: BLE001
             err = f"recovery queue unreadable: {type(e).__name__}: {e}"
             return [SubmitResult("UNRESOLVED", "*", detail=err, persisted=False, persistence_error=err)]
         return [self.reconcile(row["client_order_id"]) for row in rows]
+
+    # ---------------------------------------------------------------- entry lock + human actions
+    def entries_locked(self, symbol: Optional[str] = None):
+        """(locked, [client ids]). Fail-closed: an unreadable store locks entries."""
+        try:
+            ids = self.store.locking_intents(symbol or self.symbol)
+        except Exception as e:  # noqa: BLE001
+            return True, [f"* store unreadable: {type(e).__name__}"]
+        return bool(ids), ids
+
+    def _require_operator(self, operator, note):
+        if not operator or not str(operator).strip() or not note or not str(note).strip():
+            raise ValueError("operator and note are required for human-resolution actions")
+
+    def acknowledge(self, cid, operator: str, note: str) -> SubmitResult:
+        """Operator has SEEN the unresolved intent. Changes no state, releases no lock, stops no
+        monitoring. Recorded in history."""
+        self._require_operator(operator, note)
+        try:
+            ok = self.store.operator_action(cid, "ACKNOWLEDGED", operator, note, self.now_ns(),
+                                            require_state=PENDING_STATES,
+                                            set_cols={"acknowledged_by": operator, "acknowledged_ns": self.now_ns()})
+        except PersistenceError as e:
+            return SubmitResult("UNRESOLVED", cid, detail="acknowledge not recorded", persisted=False,
+                                persistence_error=str(e))
+        return self._from_row(cid, detail="acknowledged" if ok else "acknowledge refused (state not monitored)")
+
+    def abandon(self, cid, operator: str, note: str) -> SubmitResult:
+        """Operator declares the intent abandoned. Allowed only from UNRESOLVED and only if a FRESH
+        reconcile still finds no broker order. Keeps history, keeps monitoring for a late order,
+        and does NOT release the entry lock (see release_entry_lock). Never POSTs."""
+        self._require_operator(operator, note)
+        row, err = self._row(cid)
+        if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
+            return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
+        fresh = self.reconcile(cid)
+        if fresh.state != "UNRESOLVED":
+            fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+            return fresh
+        try:
+            ok = self.store.operator_action(cid, "ABANDONED", operator, note, self.now_ns(),
+                                            require_state=("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"),
+                                            set_cols={"abandoned_by": operator, "abandoned_ns": self.now_ns()})
+        except PersistenceError as e:
+            return SubmitResult("UNRESOLVED", cid, detail="abandon not recorded", persisted=False,
+                                persistence_error=str(e))
+        return self._from_row(cid, detail="abandoned by operator; still monitored; entry lock HELD" if ok
+                              else "abandon refused (state changed concurrently)")
+
+    def release_entry_lock(self, cid, operator: str, note: str) -> SubmitResult:
+        """Separate, explicit operator decision to stop this ABANDONED intent from blocking entries.
+        Runs a fresh reconcile first (a late order turns it into CONFLICT and keeps the lock).
+        Monitoring continues afterwards; a late order still becomes CONFLICT and re-locks."""
+        self._require_operator(operator, note)
+        row, err = self._row(cid)
+        if err or row is None or row["state"] != "ABANDONED":
+            return self._from_row(cid, detail="release refused: intent is not ABANDONED")
+        fresh = self.reconcile(cid)
+        if fresh.state != "ABANDONED":
+            fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
+            return fresh
+        try:
+            ok = self.store.operator_action(cid, "LOCK_RELEASED", operator, note, self.now_ns(),
+                                            require_state=("ABANDONED",),
+                                            set_cols={"lock_released_by": operator, "lock_released_ns": self.now_ns()})
+        except PersistenceError as e:
+            return SubmitResult("ABANDONED", cid, detail="release not recorded; lock still held", persisted=False,
+                                persistence_error=str(e))
+        return self._from_row(cid, detail="entry lock released by operator; monitoring continues" if ok
+                              else "release refused (state changed concurrently)")
