@@ -1,0 +1,80 @@
+# Stage 2 suite (10, incl. 2 integration tests) vs BASELINE 127b6d0, identical fixtures, 2026-09-23 09:14 AM PDT
+test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... FAIL
+test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
+test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
+Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... FAIL
+test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
+test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
+test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
+test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... FAIL
+test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ERROR
+test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
+test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... FAIL
+
+======================================================================
+ERROR: test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 177, in test_saturated_workers_fail_closed_without_posting
+    gw.runner = B.CallRunner(max_inflight=1)
+AttributeError: module 'broker_io' has no attribute 'CallRunner'
+
+======================================================================
+FAIL: test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 69, in test_read_never_exceeds_wall_clock_budget_on_a_hung_call
+    self.assertEqual(r.state, "UNAVAILABLE")
+AssertionError: 'OK' != 'UNAVAILABLE'
+- OK
++ UNAVAILABLE
+
+
+======================================================================
+FAIL: test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
+Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 118, in test_slow_drip_socket_is_bounded_by_the_caller_deadline
+    self.assertFalse(th.is_alive(), "read() still blocked after 4 s on a slow-drip response")
+AssertionError: True is not false : read() still blocked after 4 s on a slow-drip response
+
+======================================================================
+FAIL: test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 130, in test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted
+    self.assertLess(el, 1.0, f"submit blocked {el:.2f}s past a 0.3s deadline")
+AssertionError: 1.2267617079999988 not less than 1.0 : submit blocked 1.23s past a 0.3s deadline
+
+======================================================================
+FAIL: test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 170, in test_lookup_hang_inside_reconcile_is_bounded
+    self.assertLess(time.monotonic() - t, 1.5)
+AssertionError: 2.0349542080000003 not less than 1.5
+
+======================================================================
+FAIL: test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 157, in test_post_never_reaches_broker_before_deadline_is_unresolved_one_post
+    self.assertLess(time.monotonic() - t, 1.0)
+AssertionError: 1.0200303749999993 not less than 1.0
+
+======================================================================
+FAIL: test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/s2_base/test_p8_round4.py", line 204, in test_abandon_refused_while_this_process_still_has_the_post_in_flight
+    self.assertEqual(r.state, "UNRESOLVED")
+AssertionError: 'ACCEPTED' != 'UNRESOLVED'
+- ACCEPTED
++ UNRESOLVED
+
+
+----------------------------------------------------------------------
+Ran 10 tests in 14.635s
+
+FAILED (failures=6, errors=1)

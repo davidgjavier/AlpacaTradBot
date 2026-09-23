@@ -1,0 +1,27 @@
+# test_p8_round3b vs STAGE-2 FIX
+test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
+test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
+Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
+test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
+test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
+test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
+test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
+test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
+test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
+test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
+Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
+test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
+test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
+test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
+test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
+test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 1.541s
+
+OK

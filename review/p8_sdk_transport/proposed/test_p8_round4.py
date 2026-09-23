@@ -190,3 +190,33 @@ class C_BoundedWorkers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class D_Integration_InflightSubmitVsHumanResolution(unittest.TestCase):
+    """Integration hazard found while combining stage 2 with round 3b: a submit abandoned at its
+    deadline may still be in flight; an operator abandon/release in that window would be judged on
+    a broker check that the in-flight POST can invalidate moments later."""
+
+    def test_abandon_refused_while_this_process_still_has_the_post_in_flight(self):
+        b, c, gw, clk, db = make4()
+        b.post_delay_before = 1.0                    # POST stalls, then reaches the broker late
+        r = gw.submit(T.req("r4-d1"), "test")
+        self.assertEqual(r.state, "UNRESOLVED")
+        a = gw.abandon("r4-d1", operator="op", note="n")
+        self.assertNotEqual(gw.store.get("r4-d1")["state"], "ABANDONED",
+                            "abandoned while the POST for this id was still in flight")
+        self.assertTrue(gw.entries_locked()[0])
+        time.sleep(1.3)                              # late POST lands at the broker
+        gw.recover_pending()
+        self.assertIn(gw.store.get("r4-d1")["state"], ("ACCEPTED", "ACCEPTED_UNVERIFIED"))
+        self.assertEqual(len(posts(b)), 1)
+
+    def test_abandon_allowed_again_once_the_worker_has_finished(self):
+        b, c, gw, clk, db = make4()
+        b.post = [("raise", T.requests.exceptions.ConnectTimeout("ct"))]
+        b.post_delay_before = 0.6                    # stalls, then fails without reaching the broker
+        gw.submit(T.req("r4-d2"), "test")
+        time.sleep(0.9)                              # worker has finished (request failed)
+        gw.abandon("r4-d2", operator="op", note="n")
+        self.assertEqual(gw.store.get("r4-d2")["state"], "ABANDONED")
+        self.assertTrue(gw.entries_locked()[0])      # abandon still never unlocks

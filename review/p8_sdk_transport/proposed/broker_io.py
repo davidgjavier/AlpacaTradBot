@@ -32,6 +32,7 @@ import hashlib
 import json
 import random
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import closing
@@ -45,7 +46,9 @@ from requests.adapters import HTTPAdapter
 
 SUPPORTED_SDK_VERSION = "0.43.5"
 DEFAULT_TIMEOUT = (3.05, 10.0)          # (connect, read) seconds — proposal, tune after P-tests
-READ_DEADLINE_S = 8.0                   # total budget for one logical read incl. retries
+READ_DEADLINE_S = 8.0                   # WALL-CLOCK budget for one logical read incl. retries (stage 2)
+SUBMIT_DEADLINE_S = 15.0                # WALL-CLOCK budget the caller waits for the single POST (stage 2)
+MAX_INFLIGHT_CALLS = 8                  # bound on worker threads (incl. ones abandoned at a deadline)
 READ_MAX_ATTEMPTS = 5
 VISIBILITY_WINDOW_S = 30.0              # before "not found" may be treated as absence (UNVERIFIED value)
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
@@ -133,6 +136,87 @@ def is_retryable(e) -> bool:
 
 
 # ------------------------------------------------------------------ reads
+# ------------------------------------------------------------------ wall-clock deadlines (stage 2)
+@dataclass
+class CallOutcome:
+    state: str                     # OK | ERROR | DEADLINE | SATURATED
+    value: Any = None
+    error: Optional[BaseException] = None
+
+
+class CallRunner:
+    """Runs one broker call in a daemon worker thread; the CALLER waits at most `timeout_s`
+    wall-clock seconds.
+
+    A timed-out wait does NOT cancel the request: the worker keeps running and may complete
+    later (late completion). Its result is DISCARDED: never returned and never applied, because
+    only caller threads write state. The number of workers, including abandoned ones still in
+    flight, is bounded. When the bound is reached, calls fail closed (SATURATED) without sending
+    anything. Workers inherit the caller's thread name for tracing."""
+
+    def __init__(self, max_inflight: int = MAX_INFLIGHT_CALLS):
+        self.max_inflight = max_inflight
+        self._lock = threading.Lock()
+        self.inflight = 0
+        self.abandoned = 0          # waits that hit the deadline
+        self.late_completions = 0   # abandoned calls that later finished (result discarded)
+
+    def reserve(self) -> bool:
+        with self._lock:
+            if self.inflight >= self.max_inflight:
+                return False
+            self.inflight += 1
+            return True
+
+    def release_unused(self):
+        with self._lock:
+            self.inflight -= 1
+
+    def run_reserved(self, fn: Callable[[], Any], timeout_s: float,
+                     on_done: Optional[Callable[[], None]] = None) -> CallOutcome:
+        """on_done runs in the WORKER when the request actually finishes (even after the caller
+        gave up), so callers can track what is still in flight. It must not write intent state."""
+        box, done, flag = {}, threading.Event(), {"abandoned": False}
+
+        def work():
+            try:
+                box["v"] = fn()
+            except BaseException as e:  # noqa: BLE001
+                box["e"] = e
+            finally:
+                if on_done:
+                    try:
+                        on_done()
+                    except Exception:  # noqa: BLE001
+                        pass
+                with self._lock:
+                    self.inflight -= 1
+                    if flag["abandoned"]:
+                        self.late_completions += 1
+                done.set()
+        threading.Thread(target=work, daemon=True, name=threading.current_thread().name).start()
+        if not done.wait(max(0.0, timeout_s)):
+            with self._lock:
+                if not done.is_set():
+                    flag["abandoned"] = True
+                    self.abandoned += 1
+            if flag["abandoned"]:
+                return CallOutcome("DEADLINE", error=TimeoutError(
+                    f"no result within {timeout_s:.2f}s; request NOT cancelled and may complete late"))
+        if "e" in box:
+            return CallOutcome("ERROR", error=box["e"])
+        return CallOutcome("OK", value=box.get("v"))
+
+    def try_run(self, fn: Callable[[], Any], timeout_s: float) -> CallOutcome:
+        if not self.reserve():
+            return CallOutcome("SATURATED", error=RuntimeError(
+                f"{self.max_inflight} broker calls already in flight; failing closed"))
+        return self.run_reserved(fn, timeout_s)
+
+
+DEFAULT_RUNNER = CallRunner()
+
+
 @dataclass
 class ReadResult:
     state: str                     # OK | NOT_FOUND | UNAVAILABLE | ERROR
@@ -144,24 +228,40 @@ class ReadResult:
 def read(fn: Callable[[], Any], deadline_s: float = READ_DEADLINE_S, max_attempts: int = READ_MAX_ATTEMPTS,
          base_backoff_s: float = 0.25, max_backoff_s: float = 2.0,
          clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
-         rng: random.Random = random.Random(0)) -> ReadResult:
-    """Bounded retries for READ-ONLY calls. Never returns NOT_FOUND for anything but a
-    structured 404/40410000; exhausted retries are UNAVAILABLE, never 'absent'."""
+         rng: random.Random = random.Random(0), runner: Optional["CallRunner"] = None) -> ReadResult:
+    """Bounded retries for READ-ONLY calls within a WALL-CLOCK budget (stage 2).
+
+    Every attempt runs through a CallRunner and is given only the REMAINING budget, and backoff
+    never sleeps past it, so the caller never waits materially longer than `deadline_s`, including
+    on slow-drip responses the socket read timeout cannot catch. A timed-out attempt may still
+    complete late; its result is discarded. Never returns NOT_FOUND for anything but a structured
+    404/40410000; exhausted budget, saturation or deadline are UNAVAILABLE, never 'absent'."""
+    runner = runner or DEFAULT_RUNNER
+    wall_start = time.monotonic()                 # real time bounds the caller even with a fake clock
+
+    def remaining():
+        return min(deadline_s - (clock() - start), deadline_s - (time.monotonic() - wall_start))
     start, attempt, last = clock(), 0, None
     while attempt < max_attempts:
+        left = remaining()
+        if left <= 0:
+            break
         attempt += 1
-        try:
-            return ReadResult("OK", fn(), attempt)
-        except Exception as e:  # noqa: BLE001
-            last = e
-            if is_confirmed_not_found(e):
-                return ReadResult("NOT_FOUND", None, attempt, str(e)[:200])
-            if not is_retryable(e):
-                return ReadResult("ERROR", None, attempt, f"{type(e).__name__}: {str(e)[:200]}")
-            delay = min(max_backoff_s, base_backoff_s * (2 ** (attempt - 1))) * (0.5 + rng.random() / 2)
-            if clock() - start + delay >= deadline_s:
-                break
-            sleep(delay)
+        out = runner.try_run(fn, left)
+        if out.state == "OK":
+            return ReadResult("OK", out.value, attempt)
+        if out.state in ("DEADLINE", "SATURATED"):
+            return ReadResult("UNAVAILABLE", None, attempt, f"{out.state}: {out.error}")
+        e = out.error
+        last = e
+        if is_confirmed_not_found(e):
+            return ReadResult("NOT_FOUND", None, attempt, str(e)[:200])
+        if not is_retryable(e):
+            return ReadResult("ERROR", None, attempt, f"{type(e).__name__}: {str(e)[:200]}")
+        delay = min(max_backoff_s, base_backoff_s * (2 ** (attempt - 1))) * (0.5 + rng.random() / 2)
+        if delay >= remaining():
+            break
+        sleep(delay)
     return ReadResult("UNAVAILABLE", None, attempt, f"{type(last).__name__}: {str(last)[:200]}")
 
 
@@ -496,6 +596,20 @@ class OrderGateway:
         self.now_ns, self.read_kw = now_ns, (read_kw or {})
         self.window_ns = int(visibility_window_s * 1e9)
         self.scan_max_pages, self.scan_page_limit = scan_max_pages, scan_page_limit
+        self.runner = CallRunner()                  # stage 2: bounded workers, wall-clock waits
+        self.submit_deadline_s = SUBMIT_DEADLINE_S
+        self._inflight_lock = threading.Lock()
+        self._inflight_cids = set()                 # POSTs whose worker has not finished (process-local)
+
+    def submit_in_flight(self, cid) -> bool:
+        with self._inflight_lock:
+            return cid in self._inflight_cids
+
+    def _rk(self) -> dict:
+        """read() kwargs with this gateway's runner (tests may replace self.runner at any time)."""
+        kw = dict(self.read_kw)
+        kw.setdefault("runner", self.runner)
+        return kw
 
     @staticmethod
     def _payload(order_request) -> dict:
@@ -547,20 +661,25 @@ class OrderGateway:
             if existing["payload_sha"] != self._sha(payload):
                 raise ValueError(f"client_order_id {cid} already used with a different payload")
             return self._from_row(cid, detail="existing intent; no POST")
+        if not self.runner.reserve():               # stage 2: fail closed BEFORE creating any intent
+            return SubmitResult("NOT_SUBMITTED", cid, persisted=True,
+                                detail="broker call capacity saturated; nothing sent; no intent created")
         try:
             created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
         except PersistenceError as e:
+            self.runner.release_unused()
             # History was readable and had no row for this id, so nothing was sent under it.
             return SubmitResult("NOT_SUBMITTED", cid, detail="no prior intent; new intent not durable; nothing sent",
                                 persisted=False, persistence_error=str(e))
         if not created:                             # another caller won the insert and owns the POST
+            self.runner.release_unused()
             return self._from_row(cid, detail="intent owned by another caller; no POST")
         return self._post_and_record(order_request, cid, payload)
 
     def _unreadable_history(self, cid, payload, err) -> SubmitResult:
         base = dict(persisted=False, persistence_error=err)
         why = "prior intent history unreadable; client id retained; do NOT retry or replace"
-        r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
+        r = read(lambda: self.client.get_order_by_client_id(cid), **self._rk())
         if r.state == "OK":
             mm = identity_mismatches(json.loads(json.dumps(payload, default=str)), r.value)
             if mm:
@@ -572,8 +691,29 @@ class OrderGateway:
 
     def _post_and_record(self, order_request, cid, payload) -> SubmitResult:
         """The single POST for this id. Never raises after the POST has been attempted."""
+        with self._inflight_lock:
+            self._inflight_cids.add(cid)
+
+        def _done():
+            with self._inflight_lock:
+                self._inflight_cids.discard(cid)
+        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), self.submit_deadline_s,
+                                       on_done=_done)
+        if out.state == "DEADLINE":
+            # The POST may still reach the broker or complete late; its response will be DISCARDED.
+            # Never "not sent": UNRESOLVED, reconciled by the same client id.
+            _, ok, perr = self._record(cid, "UNRESOLVED", error=f"submit deadline {self.submit_deadline_s}s exceeded; "
+                                                                "request not cancelled, may complete late")
+            r = self.reconcile(cid)
+            r.posts_this_call = 1
+            if not ok and r.persisted:
+                r.persisted, r.persistence_error = False, perr
+            r.detail = f"submit deadline exceeded (late completion possible, result discarded); {r.detail}"
+            return r
         try:
-            order = self.client.submit_order(order_request)          # exactly one POST (SDK retry=0)
+            if out.state == "ERROR":
+                raise out.error
+            order = out.value                                         # exactly one POST (SDK retry=0)
         except Exception as e:  # noqa: BLE001
             s = _status(e)
             row, _ = self._row(cid)
@@ -615,7 +755,7 @@ class OrderGateway:
             cur = cursor
             lst = read(lambda: self.client.get_orders(GetOrdersRequest(
                 status=QueryOrderStatus.ALL, after=cur, symbols=[self.symbol], limit=self.scan_page_limit,
-                direction=Sort.ASC)), **self.read_kw)
+                direction=Sort.ASC)), **self._rk())
             if lst.state != "OK":
                 return ScanResult(matches, False, f"page {page} {lst.state}", page)
             orders = list(lst.value)
@@ -650,7 +790,7 @@ class OrderGateway:
         if row["state"] in ("ACCEPTED", "REJECTED"):
             return self._from_row(cid, detail="already resolved")
         intent = json.loads(row["payload"])
-        r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
+        r = read(lambda: self.client.get_order_by_client_id(cid), **self._rk())
         candidates, how = {}, []
         if r.state == "OK":
             candidates[str(r.value.id)] = r.value
@@ -794,9 +934,14 @@ class OrderGateway:
         row, err = self._row(cid)
         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
+        if self.submit_in_flight(cid):
+            return self._from_row(cid, detail="abandon refused: this process still has the POST for this id in flight")
         fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "UNRESOLVED":
             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+            return fresh
+        if self.submit_in_flight(cid):
+            fresh.detail = f"abandon refused: POST for this id in flight; {fresh.detail}"
             return fresh
         refusal = self._negative_check_refusal(fresh)
         if refusal:
@@ -820,6 +965,8 @@ class OrderGateway:
         row, err = self._row(cid)
         if err or row is None or row["state"] != "ABANDONED":
             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
+        if self.submit_in_flight(cid):
+            return self._from_row(cid, detail="release refused (lock HELD): POST for this id still in flight")
         fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "ABANDONED":
             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"

@@ -1,0 +1,27 @@
+# test_p8_round3 vs STAGE-2 FIX
+test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
+test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
+test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
+test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
+test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
+test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
+test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
+test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
+test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
+test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
+test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
+test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
+test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
+test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
+test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
+test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
+test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
+test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
+test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
+test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
+test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.896s
+
+OK
