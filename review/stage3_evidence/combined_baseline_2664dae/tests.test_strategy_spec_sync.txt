@@ -1,0 +1,7 @@
+test_apply_live_params_refreshes_master_spec (tests.test_strategy_spec_sync.StrategySpecSyncTests) ... ok
+test_write_master_spec_snapshot_updates_runtime_values (tests.test_strategy_spec_sync.StrategySpecSyncTests) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.004s
+
+OK

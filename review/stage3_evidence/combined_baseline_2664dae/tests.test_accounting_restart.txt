@@ -1,0 +1,21 @@
+test_concurrent_processes_record_once (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_concurrent_startup_upgrades_old_schema_once (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_conflicting_quantity_is_not_silently_dropped (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_old_schema_upgrade_preserves_legacy_rows (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_replay_retains_original_price_and_flags_discrepancy (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_unkeyed_legacy_calls_still_insert (tests.test_accounting_restart.DatabaseDeduplication) ... ok
+test_trade_commit_then_process_death_does_not_duplicate (tests.test_accounting_restart.RestartAccounting) ... ok
+test_missing_id_and_open_partial_do_not_record_or_advance (tests.test_accounting_restart.TerminalIdentityGate) ... ERROR
+
+======================================================================
+ERROR: test_missing_id_and_open_partial_do_not_record_or_advance (tests.test_accounting_restart.TerminalIdentityGate)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_accounting_restart.py", line 100, in test_missing_id_and_open_partial_do_not_record_or_advance
+    import p0_1_harness as H
+ModuleNotFoundError: No module named 'p0_1_harness'
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.396s
+
+FAILED (errors=1)
