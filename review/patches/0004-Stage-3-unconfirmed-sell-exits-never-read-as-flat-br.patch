@@ -1,0 +1,388 @@
+From 84b0318d1a21c2065334f9dd6bc29f3d38bc0c4a Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:52:36 -0700
+Subject: [PATCH 4/6] Stage 3: unconfirmed sell exits never read as flat;
+ breaker marked only when confirmed
+
+- verify_sell_filled uses the strict position read; returns None when no read
+  confirms the outcome (was: any read error -> 0.0 -> "filled").
+- All 6 callers (flatten, emergency hung-stop, scalp trail-breach, time-decay,
+  trend trail-breach, trend sell signal): explicit None branch first -> log
+  EXIT UNCONFIRMED, write nothing, log no trade; next cycle re-checks.
+- flatten_position returns FLAT/PARTIAL/UNCONFIRMED/FAILED; the circuit breaker
+  is marked done for the day only on FLAT or PARTIAL (unconfirmed/failed retries).
+
+Tests: stage-3 4 (2 fail + 2 controls pass on 2664dae; 4 pass); tests/ 58 and
+P8 103 unchanged (161/161). Buy-fill confirmation deferred to the review gate
+(needs a durable pending-entry marker; see STAGE3 review).
+---
+ crypto_trading_bot.py                         |  62 +++++++--
+ .../exit_confirmation_AFTER.txt               |   9 ++
+ review/stage3_evidence/p8_AFTER.txt           | 127 ++++++++++++++++++
+ review/stage3_evidence/tests_all_AFTER.txt    |  65 +++++++++
+ 4 files changed, 251 insertions(+), 12 deletions(-)
+ create mode 100644 review/stage3_evidence/exit_confirmation_AFTER.txt
+ create mode 100644 review/stage3_evidence/p8_AFTER.txt
+ create mode 100644 review/stage3_evidence/tests_all_AFTER.txt
+
+diff --git a/crypto_trading_bot.py b/crypto_trading_bot.py
+index 621ee36..0bc3164 100644
+--- a/crypto_trading_bot.py
++++ b/crypto_trading_bot.py
+@@ -656,12 +656,17 @@ def verify_sell_filled(qty_before, timeout_s=5, poll_s=0.5):
+     (0.0 if fully filled) — callers should keep tracking the position
+     if this comes back > 0 rather than blindly clearing state, so a
+     partial fill can't leave an untracked, unprotected residual."""
++    # Stage 3 (P0-2 remainder): an UNREADABLE position is not a fill. Only a
++    # confirmed read counts; if no read confirms anything, return None
++    # ("exit unconfirmed") so callers keep state and log no trade.
+     deadline = time.time() + timeout_s
+-    remaining = qty_before
++    remaining = None
+     while time.time() < deadline:
+-        remaining = get_position_qty()
+-        if remaining <= 0.0001:
+-            return 0.0
++        q = _position_qty_strict()
++        if q is not None:
++            if q <= 0.0001:
++                return 0.0
++            remaining = q
+         time.sleep(poll_s)
+     return remaining
+ 
+@@ -727,7 +732,11 @@ def flatten_position(qty, stop_order_id, reason):
+         order = place_market_sell(qty)
+         log(f"FLATTENED — {reason}. Market sell submitted: id {order.id}")
+         remaining = verify_sell_filled(qty)
+-        if remaining > 0:
++        if remaining is None:
++            log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                "outcome. State preserved, no trade logged; next cycle re-checks.")
++            return "UNCONFIRMED"
++        elif remaining > 0:
+             log(f"  Warning: {remaining} BTC still shows as held after the flatten sell — likely a partial fill. Re-establishing a protective stop on the residual rather than clearing state.")
+             prior_entry = db.get_position_state(SYMBOL).get("entry_price") or 0
+             try:
+@@ -738,10 +747,13 @@ def flatten_position(qty, stop_order_id, reason):
+                 current_price = prior_entry
+             new_stop_id, new_stop_price = place_protective_stop(remaining, current_price)
+             db.set_position_state(SYMBOL, entry_price=current_price, stop_order_id=new_stop_id, stop_price=new_stop_price, entry_strategy=entry_strategy)
++            return "PARTIAL"
+         else:
+             db.clear_position_state(SYMBOL)
++            return "FLAT"
+     except Exception as e:
+         log(f"  Flatten sell failed: {e}")
++        return "FAILED"
+ 
+ 
+ # ---------- Daily loss circuit breaker ----------
+@@ -1112,12 +1124,18 @@ def main():
+                     f"Daily loss limit hit (P/L ${today_pl:.2f}) — flattening BTC "
+                     f"position and halting new buys until tomorrow (UTC)."
+                 )
++                outcome = "FLAT"
+                 if qty > 0:
+-                    flatten_position(
++                    outcome = flatten_position(
+                         qty, pos_state.get("stop_order_id"),
+                         f"circuit breaker (P/L ${today_pl:.2f})",
+                     )
+-                db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
++                # Stage 3: an unconfirmed or failed flatten must not mark the breaker as
++                # done for today; the next cycle retries the flatten.
++                if outcome in ("FLAT", "PARTIAL"):
++                    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
++                else:
++                    log(f"  Breaker flatten {outcome} — NOT marking today's breaker as done; retrying next cycle.")
+             time.sleep(CHECK_INTERVAL_SECONDS)
+             continue
+ 
+@@ -1172,7 +1190,11 @@ def main():
+                     order = place_market_sell(qty)
+                     log(f"  Emergency market sell submitted: id {order.id}")
+                     remaining = verify_sell_filled(qty)
+-                    if remaining > 0:
++                    if remaining is None:
++                        log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                            "outcome. State preserved, no trade logged; next cycle re-checks.")
++                        exit_unconfirmed = True
++                    elif remaining > 0:
+                         log(f"  Warning: {remaining} BTC still held after the emergency sell — leaving position tracked for next cycle rather than clearing state.")
+                         db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy=entry_strategy)
+                     else:
+@@ -1299,7 +1321,11 @@ def main():
+                             order = place_market_sell(current_qty)
+                             log(f"[STRATEGY: SCALP]  Order submitted: runner sell (trail breach) — id {order.id}")
+                             remaining = verify_sell_filled(current_qty)
+-                            if remaining > 0:
++                            if remaining is None:
++                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
++                                exit_unconfirmed = True
++                            elif remaining > 0:
+                                 log(f"[STRATEGY: SCALP]  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
+                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None,
+                                                        entry_time=entry_time, peak_price=peak, entry_strategy="SCALP",
+@@ -1353,7 +1379,11 @@ def main():
+                         order = place_market_sell(qty)
+                         log(f"  Order submitted: BTC sell (time-decay) — id {order.id}")
+                         remaining = verify_sell_filled(qty)
+-                        if remaining > 0:
++                        if remaining is None:
++                            log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                                "outcome. State preserved, no trade logged; next cycle re-checks.")
++                            exit_unconfirmed = True
++                        elif remaining > 0:
+                             log(f"  Warning: {remaining} BTC still held after time-decay sell — leaving position tracked for next cycle rather than clearing state.")
+                             db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
+                         else:
+@@ -1447,7 +1477,11 @@ def main():
+                             order = place_market_sell(qty)
+                             log(f"  Order submitted: BTC sell (trail breach) — id {order.id}")
+                             remaining = verify_sell_filled(qty)
+-                            if remaining > 0:
++                            if remaining is None:
++                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
++                                exit_unconfirmed = True
++                            elif remaining > 0:
+                                 log(f"  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
+                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
+                             else:
+@@ -1560,7 +1594,11 @@ def main():
+                             order = place_market_sell(qty)
+                             log(f"  Order submitted automatically: BTC sell — id {order.id}")
+                             remaining = verify_sell_filled(qty)
+-                            if remaining > 0:
++                            if remaining is None:
++                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
++                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
++                                exit_unconfirmed = True
++                            elif remaining > 0:
+                                 log(f"  Warning: {remaining} BTC still held after the sell — likely a partial fill. Leaving position tracked for next cycle's reconciliation rather than clearing state.")
+                                 db.set_position_state(SYMBOL, entry_price=pos_state.get("entry_price"), stop_order_id=None, stop_price=None, entry_time=pos_state.get("entry_time"), peak_price=pos_state.get("peak_price"), entry_strategy="TREND")
+                             else:
+diff --git a/review/stage3_evidence/exit_confirmation_AFTER.txt b/review/stage3_evidence/exit_confirmation_AFTER.txt
+new file mode 100644
+index 0000000..efc0de7
+--- /dev/null
++++ b/review/stage3_evidence/exit_confirmation_AFTER.txt
+@@ -0,0 +1,9 @@
++test_confirmed_flatten_marks_breaker_control (test_stage3_exit_confirmation.CircuitBreaker) ... ok
++test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state (test_stage3_exit_confirmation.CircuitBreaker) ... ok
++test_confirmed_emergency_sell_logs_and_clears_control (test_stage3_exit_confirmation.EmergencyExit) ... ok
++test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state (test_stage3_exit_confirmation.EmergencyExit) ... ok
++
++----------------------------------------------------------------------
++Ran 4 tests in 0.059s
++
++OK
+diff --git a/review/stage3_evidence/p8_AFTER.txt b/review/stage3_evidence/p8_AFTER.txt
+new file mode 100644
+index 0000000..15d3aef
+--- /dev/null
++++ b/review/stage3_evidence/p8_AFTER.txt
+@@ -0,0 +1,127 @@
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
++test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
++test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
++test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
++test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
++test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
++test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
++test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
++test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
++test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
++test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
++test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
++test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
++test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
++test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
++Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
++test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
++test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
++test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
++Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
++test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
++test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... ok
++test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
++test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... ok
++test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ok
++test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
++If the worker cannot record that its request finished, the id must stay 'in flight'. ... ok
++test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
++Codex reviewer_checks.py case 1, as assertions. ... ok
++test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=7>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=9>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++ok
++test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... ok
++test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget) ... ok
++test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
++Codex reviewer_checks.py case 2, as an assertion. ... ok
++test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
++Another connection holds the write lock after the POST; the post-POST record must not ... ok
++test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault) ... ok
++
++----------------------------------------------------------------------
++Ran 103 tests in 20.352s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/stage3_evidence/tests_all_AFTER.txt b/review/stage3_evidence/tests_all_AFTER.txt
+new file mode 100644
+index 0000000..e57706e
+--- /dev/null
++++ b/review/stage3_evidence/tests_all_AFTER.txt
+@@ -0,0 +1,65 @@
++test_concurrent_processes_record_once (test_accounting_restart.DatabaseDeduplication) ... ok
++test_concurrent_startup_upgrades_old_schema_once (test_accounting_restart.DatabaseDeduplication) ... ok
++test_conflicting_quantity_is_not_silently_dropped (test_accounting_restart.DatabaseDeduplication) ... ok
++test_old_schema_upgrade_preserves_legacy_rows (test_accounting_restart.DatabaseDeduplication) ... ok
++test_replay_retains_original_price_and_flags_discrepancy (test_accounting_restart.DatabaseDeduplication) ... ok
++test_unkeyed_legacy_calls_still_insert (test_accounting_restart.DatabaseDeduplication) ... ok
++test_trade_commit_then_process_death_does_not_duplicate (test_accounting_restart.RestartAccounting) ... ok
++test_missing_id_and_open_partial_do_not_record_or_advance (test_accounting_restart.TerminalIdentityGate) ... ok
++test_A1_rejected_tp_is_not_a_fill (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A2_missing_tp_is_not_a_fill (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation)
++The logged incident: TP id None (placement rejected), price below target. ... ok
++test_A3_canceled_unfilled_tp_is_not_a_fill (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A4_partially_filled_still_working_is_not_complete (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation)
++0.2 of 0.5 filled, remainder still working: phase must NOT advance yet, ... ok
++test_A5_partial_fill_then_terminal_advances_with_exact_filled_qty (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A6_fully_filled_tp_advances (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A7_unknown_tp_state_is_not_a_fill (test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_B1_rejected_tp_submission_restores_full_protection (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B2_fully_filled_tp (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B3_partially_filled_tp_uses_cumulative_fill (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B4_unconfirmed_stop_cancel_blocks_tp_submission (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B5_unknown_tp_outcome_is_not_a_fill_and_remainder_protected (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B6_target_not_reached_submits_nothing (test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_C_entry_does_not_oversubscribe_and_next_cycle_is_not_false_target (test_p0_1_scalp_tp.C_IncidentReproduction) ... ok
++test_D1_bid_below_breakeven_keeps_prior_stop_below_market (test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_D2_bid_above_breakeven_still_uses_breakeven (test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_D3_no_quote_does_not_guess_breakeven (test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_E1_reviewer_case_accepted_and_filled_response_lost (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E2_accepted_unfilled_response_lost (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E3_accepted_partially_filled_response_lost (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E4_accepted_still_working_response_lost (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E5_filled_response_lost_and_lookup_down_then_restart_reconciles (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E6_order_never_reached_broker_keeps_full_protection_then_resolves (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E7_unknown_outcome_and_position_unreadable_places_nothing_from_stale_qty (test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_F1_reviewer_case_bid_below_breakeven_and_prior_stop (test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F2_missing_prior_stop_below_breakeven_does_not_invent_floor (test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F3_risk_exit_rejected_then_recovery_never_places_above_market_stop (test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F4_price_recovers_above_floor_restores_stop (test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F5_no_quote_places_existing_floor_flagged_unvalidated (test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_G1_reviewer_case_missing_price (test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G2_nan_price (test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G3_zero_and_negative_price (test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G4_partial_terminal_missing_price (test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G5_valid_price_still_recorded_exactly (test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_H10_trend_stop_check_read_fails_no_fictitious_close (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H1_reviewer_sequence_no_double_subtraction_no_clear (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H2_recovery_after_reads_return_logs_once_and_protects (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H3_restart_after_failed_read_recovers_from_persisted_state (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H4_fill_this_cycle_then_read_fails_no_arithmetic_sizing (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H5_cycle_start_read_fails_state_and_pending_ref_preserved (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H6_cycle_start_read_fails_blocks_new_entry (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H7_unstructured_not_found_text_is_not_confirmed_flat (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H8_structured_404_is_confirmed_flat_control (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H9_runner_phase_read_fails_no_fictitious_close (test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_confirmed_flatten_marks_breaker_control (test_stage3_exit_confirmation.CircuitBreaker) ... ok
++test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state (test_stage3_exit_confirmation.CircuitBreaker) ... ok
++test_confirmed_emergency_sell_logs_and_clears_control (test_stage3_exit_confirmation.EmergencyExit) ... ok
++test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state (test_stage3_exit_confirmation.EmergencyExit) ... ok
++test_apply_live_params_refreshes_master_spec (test_strategy_spec_sync.StrategySpecSyncTests) ... ok
++test_write_master_spec_snapshot_updates_runtime_values (test_strategy_spec_sync.StrategySpecSyncTests) ... ok
++
++----------------------------------------------------------------------
++Ran 58 tests in 1.194s
++
++OK
+-- 
+2.54.0 (Apple Git-157)
+

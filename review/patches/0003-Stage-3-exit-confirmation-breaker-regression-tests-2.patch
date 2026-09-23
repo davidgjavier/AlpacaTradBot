@@ -1,0 +1,434 @@
+From 6eb7df1d86a827fbdebaeef5104dc669b5bd53b5 Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:50:58 -0700
+Subject: [PATCH 3/6] Stage 3: exit-confirmation/breaker regression tests (2
+ fail, 2 controls pass on 2664dae); combined baseline 157/157 evidence
+
+---
+ .../combined_baseline_2664dae/DONE            |   1 +
+ .../discover_tests.txt                        |   5 +
+ .../combined_baseline_2664dae/p8.txt          | 127 ++++++++++++++++++
+ .../tests.test_accounting_restart.txt         |  21 +++
+ .../tests.test_p0_1_scalp_tp.txt              |  51 +++++++
+ .../tests.test_strategy_spec_sync.txt         |   7 +
+ .../exit_confirmation_BEFORE_2664dae.txt      |  45 +++++++
+ tests/test_stage3_exit_confirmation.py        | 101 ++++++++++++++
+ 8 files changed, 358 insertions(+)
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/DONE
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/discover_tests.txt
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/p8.txt
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/tests.test_accounting_restart.txt
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/tests.test_p0_1_scalp_tp.txt
+ create mode 100644 review/stage3_evidence/combined_baseline_2664dae/tests.test_strategy_spec_sync.txt
+ create mode 100644 review/stage3_evidence/exit_confirmation_BEFORE_2664dae.txt
+ create mode 100644 tests/test_stage3_exit_confirmation.py
+
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/DONE b/review/stage3_evidence/combined_baseline_2664dae/DONE
+new file mode 100644
+index 0000000..19f86f4
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/DONE
+@@ -0,0 +1 @@
++done
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/discover_tests.txt b/review/stage3_evidence/combined_baseline_2664dae/discover_tests.txt
+new file mode 100644
+index 0000000..6c754dd
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/discover_tests.txt
+@@ -0,0 +1,5 @@
++......................................................
++----------------------------------------------------------------------
++Ran 54 tests in 1.083s
++
++OK
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/p8.txt b/review/stage3_evidence/combined_baseline_2664dae/p8.txt
+new file mode 100644
+index 0000000..017d8b8
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/p8.txt
+@@ -0,0 +1,127 @@
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
++test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
++test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
++test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
++test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
++test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
++test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
++test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
++test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
++test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
++test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
++test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
++test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
++test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
++test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
++Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
++test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
++test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
++test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
++Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
++test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
++test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... ok
++test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
++test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... ok
++test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ok
++test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
++If the worker cannot record that its request finished, the id must stay 'in flight'. ... ok
++test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
++Codex reviewer_checks.py case 1, as assertions. ... ok
++test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=7>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=9>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++ok
++test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... ok
++test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget) ... ok
++test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
++Codex reviewer_checks.py case 2, as an assertion. ... ok
++test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
++Another connection holds the write lock after the POST; the post-POST record must not ... ok
++test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault) ... ok
++
++----------------------------------------------------------------------
++Ran 103 tests in 20.483s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/tests.test_accounting_restart.txt b/review/stage3_evidence/combined_baseline_2664dae/tests.test_accounting_restart.txt
+new file mode 100644
+index 0000000..9043221
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/tests.test_accounting_restart.txt
+@@ -0,0 +1,21 @@
++test_concurrent_processes_record_once (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_concurrent_startup_upgrades_old_schema_once (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_conflicting_quantity_is_not_silently_dropped (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_old_schema_upgrade_preserves_legacy_rows (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_replay_retains_original_price_and_flags_discrepancy (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_unkeyed_legacy_calls_still_insert (tests.test_accounting_restart.DatabaseDeduplication) ... ok
++test_trade_commit_then_process_death_does_not_duplicate (tests.test_accounting_restart.RestartAccounting) ... ok
++test_missing_id_and_open_partial_do_not_record_or_advance (tests.test_accounting_restart.TerminalIdentityGate) ... ERROR
++
++======================================================================
++ERROR: test_missing_id_and_open_partial_do_not_record_or_advance (tests.test_accounting_restart.TerminalIdentityGate)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_accounting_restart.py", line 100, in test_missing_id_and_open_partial_do_not_record_or_advance
++    import p0_1_harness as H
++ModuleNotFoundError: No module named 'p0_1_harness'
++
++----------------------------------------------------------------------
++Ran 8 tests in 0.396s
++
++FAILED (errors=1)
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/tests.test_p0_1_scalp_tp.txt b/review/stage3_evidence/combined_baseline_2664dae/tests.test_p0_1_scalp_tp.txt
+new file mode 100644
+index 0000000..ada2b78
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/tests.test_p0_1_scalp_tp.txt
+@@ -0,0 +1,51 @@
++test_A1_rejected_tp_is_not_a_fill (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A2_missing_tp_is_not_a_fill (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation)
++The logged incident: TP id None (placement rejected), price below target. ... ok
++test_A3_canceled_unfilled_tp_is_not_a_fill (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A4_partially_filled_still_working_is_not_complete (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation)
++0.2 of 0.5 filled, remainder still working: phase must NOT advance yet, ... ok
++test_A5_partial_fill_then_terminal_advances_with_exact_filled_qty (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A6_fully_filled_tp_advances (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_A7_unknown_tp_state_is_not_a_fill (tests.test_p0_1_scalp_tp.A_TakeProfitStateReconciliation) ... ok
++test_B1_rejected_tp_submission_restores_full_protection (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B2_fully_filled_tp (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B3_partially_filled_tp_uses_cumulative_fill (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B4_unconfirmed_stop_cancel_blocks_tp_submission (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B5_unknown_tp_outcome_is_not_a_fill_and_remainder_protected (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_B6_target_not_reached_submits_nothing (tests.test_p0_1_scalp_tp.B_TargetExecution) ... ok
++test_C_entry_does_not_oversubscribe_and_next_cycle_is_not_false_target (tests.test_p0_1_scalp_tp.C_IncidentReproduction) ... ok
++test_D1_bid_below_breakeven_keeps_prior_stop_below_market (tests.test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_D2_bid_above_breakeven_still_uses_breakeven (tests.test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_D3_no_quote_does_not_guess_breakeven (tests.test_p0_1_scalp_tp.D_BreakevenStopNeverAboveMarket) ... ok
++test_E1_reviewer_case_accepted_and_filled_response_lost (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E2_accepted_unfilled_response_lost (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E3_accepted_partially_filled_response_lost (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E4_accepted_still_working_response_lost (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E5_filled_response_lost_and_lookup_down_then_restart_reconciles (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E6_order_never_reached_broker_keeps_full_protection_then_resolves (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_E7_unknown_outcome_and_position_unreadable_places_nothing_from_stale_qty (tests.test_p0_1_scalp_tp.E_LostSubmissionResponse) ... ok
++test_F1_reviewer_case_bid_below_breakeven_and_prior_stop (tests.test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F2_missing_prior_stop_below_breakeven_does_not_invent_floor (tests.test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F3_risk_exit_rejected_then_recovery_never_places_above_market_stop (tests.test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F4_price_recovers_above_floor_restores_stop (tests.test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_F5_no_quote_places_existing_floor_flagged_unvalidated (tests.test_p0_1_scalp_tp.F_FinalStopCandidateValidated) ... ok
++test_G1_reviewer_case_missing_price (tests.test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G2_nan_price (tests.test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G3_zero_and_negative_price (tests.test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G4_partial_terminal_missing_price (tests.test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_G5_valid_price_still_recorded_exactly (tests.test_p0_1_scalp_tp.G_FillPriceEvidence) ... ok
++test_H10_trend_stop_check_read_fails_no_fictitious_close (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H1_reviewer_sequence_no_double_subtraction_no_clear (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H2_recovery_after_reads_return_logs_once_and_protects (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H3_restart_after_failed_read_recovers_from_persisted_state (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H4_fill_this_cycle_then_read_fails_no_arithmetic_sizing (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H5_cycle_start_read_fails_state_and_pending_ref_preserved (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H6_cycle_start_read_fails_blocks_new_entry (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H7_unstructured_not_found_text_is_not_confirmed_flat (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H8_structured_404_is_confirmed_flat_control (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++test_H9_runner_phase_read_fails_no_fictitious_close (tests.test_p0_1_scalp_tp.H_PositionReadFailure) ... ok
++
++----------------------------------------------------------------------
++Ran 44 tests in 0.670s
++
++OK
+diff --git a/review/stage3_evidence/combined_baseline_2664dae/tests.test_strategy_spec_sync.txt b/review/stage3_evidence/combined_baseline_2664dae/tests.test_strategy_spec_sync.txt
+new file mode 100644
+index 0000000..6f9fbff
+--- /dev/null
++++ b/review/stage3_evidence/combined_baseline_2664dae/tests.test_strategy_spec_sync.txt
+@@ -0,0 +1,7 @@
++test_apply_live_params_refreshes_master_spec (tests.test_strategy_spec_sync.StrategySpecSyncTests) ... ok
++test_write_master_spec_snapshot_updates_runtime_values (tests.test_strategy_spec_sync.StrategySpecSyncTests) ... ok
++
++----------------------------------------------------------------------
++Ran 2 tests in 0.004s
++
++OK
+diff --git a/review/stage3_evidence/exit_confirmation_BEFORE_2664dae.txt b/review/stage3_evidence/exit_confirmation_BEFORE_2664dae.txt
+new file mode 100644
+index 0000000..c15d562
+--- /dev/null
++++ b/review/stage3_evidence/exit_confirmation_BEFORE_2664dae.txt
+@@ -0,0 +1,45 @@
++test_confirmed_flatten_marks_breaker_control (test_stage3_exit_confirmation.CircuitBreaker) ... ok
++test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state (test_stage3_exit_confirmation.CircuitBreaker) ... FAIL
++test_confirmed_emergency_sell_logs_and_clears_control (test_stage3_exit_confirmation.EmergencyExit) ... ok
++test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state (test_stage3_exit_confirmation.EmergencyExit) ... FAIL
++
++======================================================================
++FAIL: test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state (test_stage3_exit_confirmation.CircuitBreaker)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage3_exit_confirmation.py", line 89, in test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state
++    self.assertEqual(calls, [], "breaker marked as flattened although the flatten was unconfirmed")
++AssertionError: Lists differ: [('crypto', '2026-09-23')] != []
++
++First list contains 1 additional elements.
++First extra element 0:
++('crypto', '2026-09-23')
++
++- [('crypto', '2026-09-23')]
+++ [] : breaker marked as flattened although the flatten was unconfirmed
++
++======================================================================
++FAIL: test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state (test_stage3_exit_confirmation.EmergencyExit)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage3_exit_confirmation.py", line 63, in test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state
++    self.assertEqual(ns["db"].trades, [], "trade logged for an exit whose fill was never confirmed")
++AssertionError: Lists differ: [{'entry_price': 100.0, 'exit_price': 99.0[163 chars]0.0}] != []
++
++First list contains 1 additional elements.
++First extra element 0:
++{'entry_price': 100.0, 'exit_price': 99.0, 'qty': 0.5, 'entry_time': '2026-09-23T16:50:53.347385+00:00', 'exit_time': '2026-09-23T16:50:53.347459+00:00', 'exit_reason': 'emergency_hung_stop', 'slippage': 0.0}
++
+++ []
++- [{'entry_price': 100.0,
++-   'entry_time': '2026-09-23T16:50:53.347385+00:00',
++-   'exit_price': 99.0,
++-   'exit_reason': 'emergency_hung_stop',
++-   'exit_time': '2026-09-23T16:50:53.347459+00:00',
++-   'qty': 0.5,
++-   'slippage': 0.0}] : trade logged for an exit whose fill was never confirmed
++
++----------------------------------------------------------------------
++Ran 4 tests in 0.056s
++
++FAILED (failures=2)
+diff --git a/tests/test_stage3_exit_confirmation.py b/tests/test_stage3_exit_confirmation.py
+new file mode 100644
+index 0000000..662fe82
+--- /dev/null
++++ b/tests/test_stage3_exit_confirmation.py
+@@ -0,0 +1,101 @@
++"""Stage 3 regression tests: sell-exit confirmation and the circuit breaker must not treat an
++UNREADABLE position as flat.
++
++Run (integrated code):  /usr/bin/python3 -m unittest discover -s tests -p 'test_stage3_*.py' -v
++Run against baseline:   BOT_SOURCE=/path/to/baseline/crypto_trading_bot.py (same command)
++Uses the existing P0-1 harness unchanged; the only local patch is a fake-broker behavior in which a
++market sell is ACCEPTED but not yet filled, so a failed confirmation read cannot be mistaken for success.
++"""
++import sys
++import unittest
++from datetime import datetime, timezone
++from pathlib import Path
++from types import SimpleNamespace as NS
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++import p0_1_harness as H  # noqa: E402
++
++
++def TIMEOUT():
++    return TimeoutError("fake broker: position read timed out")
++
++
++def fail_from(n):
++    return lambda k: TIMEOUT() if k >= n else None
++
++
++def market_sells_accept_without_filling(broker):
++    orig = broker._accept
++
++    def accept(req):
++        if getattr(req, "_kind", None) == "market" and req.side == "sell":
++            broker._n += 1
++            oid = f"o{broker._n}"
++            broker.orders[oid] = NS(id=oid, kind="market", qty=float(req.qty), side="sell",
++                                    status=NS(value="accepted"), filled_qty="0", filled_avg_price=None,
++                                    client_order_id=getattr(req, "client_order_id", None))
++            return NS(id=oid, legs=[])
++        return orig(req)
++    broker._accept = accept
++
++
++def hung_stop_position(ns, strategy="TREND"):
++    b = ns["_broker"]
++    b.add_order("s1", "stop_limit", 0.5, stop_price=99.0, limit_price=98.9)
++    ns["db"].states["BTC/USD"] = dict(entry_price=100.0, stop_order_id="s1", stop_price=99.0,
++                                      entry_time=datetime.now(timezone.utc).isoformat(), peak_price=100.0,
++                                      entry_strategy=strategy)
++
++
++def breaker_calls(ns):
++    calls = []
++    ns["db"].mark_breaker_tripped = lambda *a: calls.append(a)
++    return calls
++
++
++class EmergencyExit(unittest.TestCase):
++    def test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state(self):
++        ns = H.load_bot(qty=0.5, bid=90.0)               # bid far below the stop's limit -> hung stop
++        hung_stop_position(ns)
++        market_sells_accept_without_filling(ns["_broker"])
++        ns["_broker"].position_fail = fail_from(2)       # cycle-start read OK; every confirmation read fails
++        H.cycle(ns)
++        self.assertEqual(ns["db"].trades, [], "trade logged for an exit whose fill was never confirmed")
++        self.assertNotEqual(ns["db"].states.get("BTC/USD"), {}, "state cleared although the exit was unconfirmed")
++
++    def test_confirmed_emergency_sell_logs_and_clears_control(self):
++        ns = H.load_bot(qty=0.5, bid=90.0)
++        hung_stop_position(ns)                           # fake broker fills the market sell; reads succeed
++        H.cycle(ns)
++        self.assertEqual(len(ns["db"].trades), 1)
++        self.assertEqual(ns["db"].states.get("BTC/USD"), {})
++
++
++class CircuitBreaker(unittest.TestCase):
++    def breaker_ns(self):
++        ns = H.load_bot(qty=0.5, bid=100.0)
++        ns["db"].states["BTC/USD"] = dict(entry_price=100.0, stop_order_id=None, stop_price=None,
++                                          entry_time=datetime.now(timezone.utc).isoformat(), peak_price=100.0,
++                                          entry_strategy="TREND")
++        ns["get_today_pl"] = lambda baseline: -1e9       # loss limit breached
++        return ns
++
++    def test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state(self):
++        ns = self.breaker_ns()
++        calls = breaker_calls(ns)
++        market_sells_accept_without_filling(ns["_broker"])
++        ns["_broker"].position_fail = fail_from(2)
++        H.cycle(ns)
++        self.assertEqual(calls, [], "breaker marked as flattened although the flatten was unconfirmed")
++        self.assertNotEqual(ns["db"].states.get("BTC/USD"), {}, "state cleared although the flatten was unconfirmed")
++
++    def test_confirmed_flatten_marks_breaker_control(self):
++        ns = self.breaker_ns()
++        calls = breaker_calls(ns)
++        H.cycle(ns)
++        self.assertEqual(len(calls), 1)
++        self.assertEqual(ns["db"].states.get("BTC/USD"), {})
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,932 @@
+From 9522fa89074a2b54c1405f18638464b39c7e846e Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:54:26 -0700
+Subject: [PATCH 6/6] Stages 3-4: caller map, recovery protocol, gated
+ decisions, original-audit comparison (31->27->26 FAIL), restart evidence
+
+---
+ review/STAGE3_4_REVIEW.md                     | 124 +++++++++
+ review/stage4_evidence/audit_comparison.txt   |  36 +++
+ .../audit_results_audited.json                | 239 ++++++++++++++++++
+ .../audit_results_integrated_1f6171b.json     | 239 ++++++++++++++++++
+ .../audit_results_p01_94b2efd.json            | 239 ++++++++++++++++++
+ 5 files changed, 877 insertions(+)
+ create mode 100644 review/STAGE3_4_REVIEW.md
+ create mode 100644 review/stage4_evidence/audit_comparison.txt
+ create mode 100644 review/stage4_evidence/audit_results_audited.json
+ create mode 100644 review/stage4_evidence/audit_results_integrated_1f6171b.json
+ create mode 100644 review/stage4_evidence/audit_results_p01_94b2efd.json
+
+diff --git a/review/STAGE3_4_REVIEW.md b/review/STAGE3_4_REVIEW.md
+new file mode 100644
+index 0000000..a864320
+--- /dev/null
++++ b/review/STAGE3_4_REVIEW.md
+@@ -0,0 +1,124 @@
++# Stages 3–4 — isolated integration (partial, stopped at review gate) · OFFLINE
++
++- **Worktree:** `/Users/davidj/AlpacaTradeBot_integration_worktree`, branch `review/stage3-integration`
++  (from `94b2efd`).
++- **Nothing** here touches the running checkout, services, credentials, settings, the SDK or the broker.
++  Operational lock release stays disabled.
++
++## Commits
++
++| Commit | Content |
++|---|---|
++| `20c28a9` | Codex accounting idempotency, verbatim (`crash_review a35f86a..cbf1b9b`; the baseline files were verified identical to `94b2efd`) |
++| `2664dae` | P8 `broker_io.py` and its 103 tests, verbatim (`eb02791`; sha `195fc3c2…`) |
++| `6eb7df1` | Stage-3 exit-confirmation/breaker tests (before-evidence) plus combined baseline evidence |
++| `84b0318` | Fix: unconfirmed sell exits never read as flat; breaker marked only when confirmed |
++| `1f6171b` | Cosmetic: inert markers → explicit `pass` (no behavior change) |
++
++## Combined baseline (`2664dae`, before any caller change)
++
++- `tests/`: 54/54 (44 P0-1/P0-2 + 8 accounting + 2 spec-sync) with Codex's `discover` command.
++- P8: 103/103.
++- **Total 157/157.**
++- **Integration finding:** `tests/test_accounting_restart.py` errors when run as `-m unittest
++  tests.test_accounting_restart`, because it imports `p0_1_harness` relying on `discover`'s path. It's
++  an invocation dependency, not behavior; `discover` is used as canonical.
++
++## Caller map (`crypto_trading_bot.py`, `1f6171b`)
++
++| Call site (function @ line) | Current behavior | Proposed wrapper contract | Durable state | Audit link |
++|---|---|---|---|---|
++| `place_buy` @688 (both entry paths) | market notional, no client id; exception → "Order failed", nothing recorded | `OrderGateway.submit` with a persisted client id; UNRESOLVED blocks entries | **needs a pending-entry intent** (none today) | "Pending crypto entry must prevent duplicate entry" FAIL |
++| buy-fill check @~1537, @~1617 | `get_position_qty()` (**error → 0**) after `sleep(2)` | strict read; unknown ≠ 0 | pending-entry intent | "crypto lookup outage" FAIL (legacy fn) |
++| `_submit_stop_limit_sell` @565, `replace_protective_stop` @631, `place_protective_stop` | no client id; exception → None ("unprotected") | submit + intent; UNRESOLVED ≠ "no stop" (possible duplicate reservation) | `position_state.stop_order_id` only | "Failed stop replacement preserves prior floor" FAIL |
++| `place_take_profit_limit` @603 | legacy resting TP (P0-1 no longer calls it for scalps) | retire, or route through the gateway | — | — |
++| `_scalp_execute_target1` @990 | IOC limit, `p01t1-` client id persisted before POST (P0-1) | already intent-like; migrate to the gateway | `take_profit_order_id='cid:…'` | P0-1 fixed |
++| `place_market_sell` @695 (6 exit paths) | no client id | submit + intent; late acceptance possible | `position_state` | — |
++| `verify_sell_filled` @652 (6 callers) | **fixed:** strict reads, None = unconfirmed | wrapper `read()` with budget | unchanged state on None | "Exit must not be confirmed on lookup error" **PASS (was FAIL)** |
++| `flatten_position` @701 + breaker @1116 | **fixed:** returns FLAT/PARTIAL/UNCONFIRMED/FAILED; breaker marked only on FLAT/PARTIAL | — | baseline breaker stamp | "Breaker must retry residual" still FAIL (pre-marked scenario) |
++| `cancel_order_if_open` @381 / `cancel_and_confirm` @535 | swallows errors; polls the open-order count | wrapper `cancel()` = request accepted, not terminal; poll the order | — | "Cancel/fill race must re-read position" FAIL |
++| `stop_order_still_open` @399 | lookup error → False ("not open") | tri-state (OPEN/NOT_OPEN/UNKNOWN) | — | P0-2 remainder |
++| `get_order_fill_state` @441, `_position_qty_strict` @483, `_open_sell_reserved_strict` @492 | already tri-state (P0-1/P0-2) | wrap with `read()` + budget | — | — |
++| `get_actual_fill_price` @669 | falls back to the estimate silently | keep, but flag price-unconfirmed | trade row | P0-1 `price_unconfirmed` |
++| `get_account` @752/763 (breaker P/L) | error → P/L 0.0 → breaker not tripped | unknown P/L → block entries | — | "Unmeasurable account risk blocks new entry" FAIL |
++| `data_client` bars/quotes @228/250/279/734 | exceptions → skip cycle / None | wrapper `read()`; stale/NaN quotes rejected | — | "Reject NaN/crossed quotes" FAIL |
++| `db.log_trade` ×7 inline in `main` | 1 keyed (Target-1 `execution_key`); others unkeyed | key every terminal exit by broker order id | ledger | Codex `cbf1b9b` covers Target-1 only |
++| `db.set/clear_position_state` ×~30 inline in `main` | single row per SYMBOL; no account key | account + symbol key; intent ids per leg | `position_state` | "Concurrent state writer…" FAIL |
++
++## Blocking design gap (stops dependent integration at this gate)
++
++The bot has **no durable per-order identity** apart from Target-1. Position state is one row per
++symbol, holding one `stop_order_id`. Routing entries, stops and exits through `OrderGateway` needs
++these decisions, which the brief says must not be made silently:
++
++1. **Account key (D7).** Where the intent store lives and how it's keyed so paper and live, or two
++   accounts, never mingle. Proposed: `{mode}:{sha256(account_id)[:12]}` from `GET /v2/account` at
++   startup, failing closed if it's unreadable. Paper and live get separate DB files.
++2. **Unresolved-entry protection policy (D8).** If a buy is UNRESOLVED but a strict read shows
++   `qty > 0`, do we protect the *observed* position (a stop sized from the broker qty, never from the
++   intent)? Proposed yes. Unknown qty → no stop, no claim of protection, entries locked.
++3. **Unresolved stop placement (D9).** An ambiguous stop submission may or may not reserve BTC.
++   Proposed: don't place a second stop while the first is UNRESOLVED; alert; reconcile by client id.
++4. **Legacy-row quarantine (D10).** Existing unkeyed trades and position rows can't be matched to new
++   execution keys. Proposed: at cutover, snapshot `trade_history` and `position_state` into
++   `legacy_quarantine` tables. No backfill. Refuse to start if a Target-1 transition is in progress
++   (per Codex's rollout note).
++5. **Buy-fill confirmation (deferred defect).** Needs a durable pending-entry marker plus a
++   cycle-start rule: `qty==0` with a pending buy that isn't terminal must NOT clear state or allow an
++   entry. Implementation is ready to start once D7/D8 are decided, since the marker belongs in the
++   keyed intent store.
++
++## Recovery protocol (state machine, proposed)
++
++A broker side effect and a DB write are never atomic. Order per side effect:
++**(a)** persist intent (client id) → **(b)** POST → **(c)** record the outcome → **(d)** update
++position state → **(e)** keyed ledger row.
++
++| Crash window | Result on restart | Required handling |
++|---|---|---|
++| (a)–(b) | intent SUBMITTING, `post_inflight=1`, no order | UNRESOLVED; entries locked; never auto-resubmit |
++| (b)–(c) | order may exist | reconcile by client id → ACCEPTED/UNVERIFIED/CONFLICT |
++| (c)–(d) | order known, position state stale | re-derive from the broker position (strict read) + intent |
++| (d)–(e) | state advanced, ledger missing | replay from the intent's terminal order → keyed row (`cbf1b9b` makes the replay idempotent) |
++| after (e) | complete | — |
++
++**Invariants:**
++- Unknown position ≠ flat.
++- Unconfirmed exit ≠ closed; the breaker isn't marked done.
++- No new exposure while any intent for the account and symbol is SUBMITTING, UNRESOLVED, CONFLICT or
++  ACCEPTED_UNVERIFIED.
++- Protection is sized only from a confirmed broker qty.
++- Strategy parameters are unchanged.
++
++## Stage 4 so far: the original audit (identical harness; only the bot sources swapped)
++
++| Run | PASS | FAIL | SENSITIVITY | HARNESS_ERROR |
++|---|---|---|---|---|
++| audited snapshot | 6 | 31 | 1 | 0 |
++| `94b2efd` (P0-1/P0-2) | 9 | 27 | 1 | 1 |
++| integrated `1f6171b` | 10 | 26 | 1 | 1 |
++
++- **Changed checks:** "Exit must not be confirmed on lookup error" FAIL → FAIL → **PASS** (this
++  stage). Three active-status checks passed at `94b2efd`.
++- The HARNESS_ERROR is the known audit-harness indexing issue.
++- **All 26 remaining FAILs are listed individually** in `stage4_evidence/audit_comparison.txt`. None is
++  claimed closed.
++- The full combined adversarial E2E suite (lost responses, late acceptance, partial fills, concurrent
++  processes, etc. through the integrated bot) **depends on the gated integration** and is not built
++  yet. The wrapper-level versions exist in the 103 P8 tests.
++
++## Service restarts (read-only evidence; no attribution)
++
++- `com.davidj.alpacabot`, `alpacacryptobot` and `alpacadashboard` plists were **modified 2026-09-23
++  09:19:43**.
++- The crypto bot and dashboard started 09:21:09.
++- The equity bot started 09:32:26 after its previous process exited 1. `bot_error.log` ends with an
++  uncaught `requests.exceptions.ConnectionError`; `KeepAlive=true`.
++- The plists still point to the same scripts.
++- `com.davidj.research.daemon` was created 09:06.
++- The evidence establishes *when*, not *who*.
++
++## Stage 5
++
++Not started. It's independent of this gate and is next: revise P1–P8 with broker rules verified from
++official sources.
+diff --git a/review/stage4_evidence/audit_comparison.txt b/review/stage4_evidence/audit_comparison.txt
+new file mode 100644
+index 0000000..099da28
+--- /dev/null
++++ b/review/stage4_evidence/audit_comparison.txt
+@@ -0,0 +1,36 @@
++CHANGED (audited -> 94b2efd -> integrated 1f6171b):
++  FAIL -> FAIL -> PASS                     Exit must not be confirmed on lookup error
++  FAIL -> PASS -> PASS                     Active status partially_filled
++  FAIL -> PASS -> PASS                     Active status pending_cancel
++  FAIL -> PASS -> PASS                     Active status pending_replace
++  FAIL -> HARNESS_ERROR -> HARNESS_ERROR   Rejected scalp TP must not count as filled
++
++REMAINING non-PASS on integrated 1f6171b:
++  [FAIL] day_trading_bot lookup outage :: Broker timeout returned qty=0.0; required unknown/error, not flat
++  [FAIL] crypto_trading_bot lookup outage :: Broker timeout returned qty=0.0; required unknown/error, not flat
++  [HARNESS_ERROR] Rejected scalp TP must not count as filled :: IndexError('list index out of range')
++  [FAIL] Resting exit between polls must be recorded :: Position became zero before cycle: trade rows=0, state={}
++  [FAIL] Breaker remains latched BTC/USD :: Previously tripped breaker, recovered P/L: new orders=1
++  [FAIL] Breaker remains latched NVDA :: Previously tripped breaker, recovered P/L: new orders=1
++  [FAIL] Breaker must retry residual liquidation :: Exposure remains after earlier flatten failed: flatten retry count=0
++  [FAIL] Cancel/fill race must re-read position before sell :: Stop filled during cancel: market sell still submitted qty=10.0
++  [FAIL] Whole-share entry respects notional cap :: $500 cap, $600 share: submitted notional=$600
++  [FAIL] Equity cannot add unbudgeted position on crossover :: Already holding 5 shares: additional buy orders=1
++  [FAIL] Pending crypto entry must prevent duplicate entry :: Entry still unfilled across two cycles: buy submissions=2
++  [FAIL] Partial entry growth must resize protection :: Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0
++  [FAIL] Time-decay exit honors documented unconditional policy :: Time-decay risk exit with 2% spread: orders=0
++  [FAIL] Reject crossed quotes :: crossed quote passes spread gate=True
++  [FAIL] Reject NaN quotes :: NaN quote passes spread gate=True
++  [FAIL] RVOL settings reach executing functions :: RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8
++  [FAIL] Reject nonfinite parameter :: NaN parameter accepted=True
++  [FAIL] Parameter bounds respect available lookback :: Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None
++  [FAIL] Hysteresis counts unique bars :: Same bar evaluated twice changes active regime to breakout
++  [SENSITIVITY] EMA200 warmup stable under regime transition :: EMA200 using 500 bars=104.104164; using fetched 250=100.000000
++  [FAIL] Negative residual is exposure, not flat :: Unexpected short -1 share is reported remaining=0.0
++  [FAIL] Protection independent of historical data outage :: Unprotected position during bar endpoint failure: protection/exit actions=0
++  [FAIL] BTC residual uses instrument precision :: 0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0
++  [FAIL] Failed stop replacement preserves prior risk floor :: Failed replacement after cancel loses prior stop floor: stored stop=None
++  [FAIL] EOD retries until actually flat :: EOD already marked, residual 5 shares: liquidation retry count=0
++  [FAIL] Scalp obeys documented time-decay exit :: 3-hour losing scalp, both orders open: time-decay sell count=0
++  [FAIL] Unmeasurable account risk blocks new entry :: Cannot measure daily risk: new entries=1
++  [FAIL] Concurrent state writer cannot resurrect cleared position :: Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0
+diff --git a/review/stage4_evidence/audit_results_audited.json b/review/stage4_evidence/audit_results_audited.json
+new file mode 100644
+index 0000000..0519e5e
+--- /dev/null
++++ b/review/stage4_evidence/audit_results_audited.json
+@@ -0,0 +1,239 @@
++{
++  "method": "Original function ASTs; injected fake broker, data, time, and memory state. No network. FAIL = safety invariant violation.",
++  "counts": {
++    "PASS": 6,
++    "FAIL": 31,
++    "SENSITIVITY": 1,
++    "HARNESS_ERROR": 0
++  },
++  "tests": [
++    {
++      "test": "day_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "crypto_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "Exit must not be confirmed on lookup error",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Verification reports remaining=0.0 during broker outage"
++    },
++    {
++      "test": "Active status partially_filled",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "partially_filled: treated as open=False"
++    },
++    {
++      "test": "Active status pending_cancel",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "pending_cancel: treated as open=False"
++    },
++    {
++      "test": "Active status pending_replace",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "pending_replace: treated as open=False"
++    },
++    {
++      "test": "Rejected scalp TP must not count as filled",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "TP rejected/missing: target1_filled=True, logged_qty=0.0, new_stop=100.5"
++    },
++    {
++      "test": "Resting exit between polls must be recorded",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Position became zero before cycle: trade rows=0, state={}"
++    },
++    {
++      "test": "Breaker remains latched BTC/USD",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker remains latched NVDA",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker must retry residual liquidation",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Exposure remains after earlier flatten failed: flatten retry count=0"
++    },
++    {
++      "test": "Cancel/fill race must re-read position before sell",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Stop filled during cancel: market sell still submitted qty=10.0"
++    },
++    {
++      "test": "Whole-share entry respects notional cap",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "$500 cap, $600 share: submitted notional=$600"
++    },
++    {
++      "test": "Equity cannot add unbudgeted position on crossover",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Already holding 5 shares: additional buy orders=1"
++    },
++    {
++      "test": "Pending crypto entry must prevent duplicate entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry still unfilled across two cycles: buy submissions=2"
++    },
++    {
++      "test": "Partial entry growth must resize protection",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0"
++    },
++    {
++      "test": "Time-decay exit honors documented unconditional policy",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Time-decay risk exit with 2% spread: orders=0"
++    },
++    {
++      "test": "Reject crossed quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "crossed quote passes spread gate=True"
++    },
++    {
++      "test": "Reject NaN quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "NaN quote passes spread gate=True"
++    },
++    {
++      "test": "RVOL settings reach executing functions",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8"
++    },
++    {
++      "test": "Reject nonfinite parameter",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "NaN parameter accepted=True"
++    },
++    {
++      "test": "Parameter bounds respect available lookback",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None"
++    },
++    {
++      "test": "Hysteresis counts unique bars",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Same bar evaluated twice changes active regime to breakout"
++    },
++    {
++      "test": "EMA200 warmup stable under regime transition",
++      "kind": "sensitivity diagnostic",
++      "status": "SENSITIVITY",
++      "detail": "EMA200 using 500 bars=104.104164; using fetched 250=100.000000"
++    },
++    {
++      "test": "Negative residual is exposure, not flat",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Unexpected short -1 share is reported remaining=0.0"
++    },
++    {
++      "test": "Protection independent of historical data outage",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Unprotected position during bar endpoint failure: protection/exit actions=0"
++    },
++    {
++      "test": "BTC residual uses instrument precision",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0"
++    },
++    {
++      "test": "Failed stop replacement preserves prior risk floor",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Failed replacement after cancel loses prior stop floor: stored stop=None"
++    },
++    {
++      "test": "ATR gap formula and insufficient macro history",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Gap TR=[12]; constant-range ATR=2.0; short macro history returns unknown"
++    },
++    {
++      "test": "Exclude forming candle",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Forming candle removed: remaining bars=1"
++    },
++    {
++      "test": "Macro fails closed",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Insufficient macro history allows entry=False"
++    },
++    {
++      "test": "Unknown open-order count prevents duplicate stop",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Unknown open-order inventory: replacement orders=0"
++    },
++    {
++      "test": "Hung-stop emergency bypasses spread",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Flash gap past stop-limit, wide spread: emergency sell attempted=True (cancellation race tested separately)"
++    },
++    {
++      "test": "EOD retries until actually flat",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "EOD already marked, residual 5 shares: liquidation retry count=0"
++    },
++    {
++      "test": "Scalp obeys documented time-decay exit",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "3-hour losing scalp, both orders open: time-decay sell count=0"
++    },
++    {
++      "test": "Unmeasurable account risk blocks new entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Cannot measure daily risk: new entries=1"
++    },
++    {
++      "test": "Concurrent state writer cannot resurrect cleared position",
++      "kind": "actual SQLite ordered concurrency",
++      "status": "FAIL",
++      "detail": "Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0"
++    },
++    {
++      "test": "ATR-fallback bracket payload is constructible",
++      "kind": "installed SDK offline validation",
++      "status": "PASS",
++      "detail": "SDK constructor accepts; server validation remains untested"
++    }
++  ]
++}
+\ No newline at end of file
+diff --git a/review/stage4_evidence/audit_results_integrated_1f6171b.json b/review/stage4_evidence/audit_results_integrated_1f6171b.json
+new file mode 100644
+index 0000000..9bfd986
+--- /dev/null
++++ b/review/stage4_evidence/audit_results_integrated_1f6171b.json
+@@ -0,0 +1,239 @@
++{
++  "method": "Original function ASTs; injected fake broker, data, time, and memory state. No network. FAIL = safety invariant violation.",
++  "counts": {
++    "PASS": 10,
++    "FAIL": 26,
++    "SENSITIVITY": 1,
++    "HARNESS_ERROR": 1
++  },
++  "tests": [
++    {
++      "test": "day_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "crypto_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "Exit must not be confirmed on lookup error",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "Verification reports remaining=None during broker outage"
++    },
++    {
++      "test": "Active status partially_filled",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "partially_filled: treated as open=True"
++    },
++    {
++      "test": "Active status pending_cancel",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "pending_cancel: treated as open=True"
++    },
++    {
++      "test": "Active status pending_replace",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "pending_replace: treated as open=True"
++    },
++    {
++      "test": "Rejected scalp TP must not count as filled",
++      "kind": "original main loop",
++      "status": "HARNESS_ERROR",
++      "detail": "IndexError('list index out of range')"
++    },
++    {
++      "test": "Resting exit between polls must be recorded",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Position became zero before cycle: trade rows=0, state={}"
++    },
++    {
++      "test": "Breaker remains latched BTC/USD",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker remains latched NVDA",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker must retry residual liquidation",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Exposure remains after earlier flatten failed: flatten retry count=0"
++    },
++    {
++      "test": "Cancel/fill race must re-read position before sell",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Stop filled during cancel: market sell still submitted qty=10.0"
++    },
++    {
++      "test": "Whole-share entry respects notional cap",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "$500 cap, $600 share: submitted notional=$600"
++    },
++    {
++      "test": "Equity cannot add unbudgeted position on crossover",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Already holding 5 shares: additional buy orders=1"
++    },
++    {
++      "test": "Pending crypto entry must prevent duplicate entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry still unfilled across two cycles: buy submissions=2"
++    },
++    {
++      "test": "Partial entry growth must resize protection",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0"
++    },
++    {
++      "test": "Time-decay exit honors documented unconditional policy",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Time-decay risk exit with 2% spread: orders=0"
++    },
++    {
++      "test": "Reject crossed quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "crossed quote passes spread gate=True"
++    },
++    {
++      "test": "Reject NaN quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "NaN quote passes spread gate=True"
++    },
++    {
++      "test": "RVOL settings reach executing functions",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8"
++    },
++    {
++      "test": "Reject nonfinite parameter",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "NaN parameter accepted=True"
++    },
++    {
++      "test": "Parameter bounds respect available lookback",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None"
++    },
++    {
++      "test": "Hysteresis counts unique bars",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Same bar evaluated twice changes active regime to breakout"
++    },
++    {
++      "test": "EMA200 warmup stable under regime transition",
++      "kind": "sensitivity diagnostic",
++      "status": "SENSITIVITY",
++      "detail": "EMA200 using 500 bars=104.104164; using fetched 250=100.000000"
++    },
++    {
++      "test": "Negative residual is exposure, not flat",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Unexpected short -1 share is reported remaining=0.0"
++    },
++    {
++      "test": "Protection independent of historical data outage",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Unprotected position during bar endpoint failure: protection/exit actions=0"
++    },
++    {
++      "test": "BTC residual uses instrument precision",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0"
++    },
++    {
++      "test": "Failed stop replacement preserves prior risk floor",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Failed replacement after cancel loses prior stop floor: stored stop=None"
++    },
++    {
++      "test": "ATR gap formula and insufficient macro history",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Gap TR=[12]; constant-range ATR=2.0; short macro history returns unknown"
++    },
++    {
++      "test": "Exclude forming candle",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Forming candle removed: remaining bars=1"
++    },
++    {
++      "test": "Macro fails closed",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Insufficient macro history allows entry=False"
++    },
++    {
++      "test": "Unknown open-order count prevents duplicate stop",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Unknown open-order inventory: replacement orders=0"
++    },
++    {
++      "test": "Hung-stop emergency bypasses spread",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Flash gap past stop-limit, wide spread: emergency sell attempted=True (cancellation race tested separately)"
++    },
++    {
++      "test": "EOD retries until actually flat",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "EOD already marked, residual 5 shares: liquidation retry count=0"
++    },
++    {
++      "test": "Scalp obeys documented time-decay exit",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "3-hour losing scalp, both orders open: time-decay sell count=0"
++    },
++    {
++      "test": "Unmeasurable account risk blocks new entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Cannot measure daily risk: new entries=1"
++    },
++    {
++      "test": "Concurrent state writer cannot resurrect cleared position",
++      "kind": "actual SQLite ordered concurrency",
++      "status": "FAIL",
++      "detail": "Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0"
++    },
++    {
++      "test": "ATR-fallback bracket payload is constructible",
++      "kind": "installed SDK offline validation",
++      "status": "PASS",
++      "detail": "SDK constructor accepts; server validation remains untested"
++    }
++  ]
++}
+\ No newline at end of file
+diff --git a/review/stage4_evidence/audit_results_p01_94b2efd.json b/review/stage4_evidence/audit_results_p01_94b2efd.json
+new file mode 100644
+index 0000000..568b467
+--- /dev/null
++++ b/review/stage4_evidence/audit_results_p01_94b2efd.json
+@@ -0,0 +1,239 @@
++{
++  "method": "Original function ASTs; injected fake broker, data, time, and memory state. No network. FAIL = safety invariant violation.",
++  "counts": {
++    "PASS": 9,
++    "FAIL": 27,
++    "SENSITIVITY": 1,
++    "HARNESS_ERROR": 1
++  },
++  "tests": [
++    {
++      "test": "day_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "crypto_trading_bot lookup outage",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Broker timeout returned qty=0.0; required unknown/error, not flat"
++    },
++    {
++      "test": "Exit must not be confirmed on lookup error",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Verification reports remaining=0.0 during broker outage"
++    },
++    {
++      "test": "Active status partially_filled",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "partially_filled: treated as open=True"
++    },
++    {
++      "test": "Active status pending_cancel",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "pending_cancel: treated as open=True"
++    },
++    {
++      "test": "Active status pending_replace",
++      "kind": "original helper",
++      "status": "PASS",
++      "detail": "pending_replace: treated as open=True"
++    },
++    {
++      "test": "Rejected scalp TP must not count as filled",
++      "kind": "original main loop",
++      "status": "HARNESS_ERROR",
++      "detail": "IndexError('list index out of range')"
++    },
++    {
++      "test": "Resting exit between polls must be recorded",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Position became zero before cycle: trade rows=0, state={}"
++    },
++    {
++      "test": "Breaker remains latched BTC/USD",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker remains latched NVDA",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Previously tripped breaker, recovered P/L: new orders=1"
++    },
++    {
++      "test": "Breaker must retry residual liquidation",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Exposure remains after earlier flatten failed: flatten retry count=0"
++    },
++    {
++      "test": "Cancel/fill race must re-read position before sell",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Stop filled during cancel: market sell still submitted qty=10.0"
++    },
++    {
++      "test": "Whole-share entry respects notional cap",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "$500 cap, $600 share: submitted notional=$600"
++    },
++    {
++      "test": "Equity cannot add unbudgeted position on crossover",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Already holding 5 shares: additional buy orders=1"
++    },
++    {
++      "test": "Pending crypto entry must prevent duplicate entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry still unfilled across two cycles: buy submissions=2"
++    },
++    {
++      "test": "Partial entry growth must resize protection",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Entry grows .35 -> 1.0; existing stop-for-.35 remains; corrective submissions=0"
++    },
++    {
++      "test": "Time-decay exit honors documented unconditional policy",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Time-decay risk exit with 2% spread: orders=0"
++    },
++    {
++      "test": "Reject crossed quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "crossed quote passes spread gate=True"
++    },
++    {
++      "test": "Reject NaN quotes",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "NaN quote passes spread gate=True"
++    },
++    {
++      "test": "RVOL settings reach executing functions",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "RVOL_PERIOD=10 but 11-bar input result=None; trend threshold UI=1.5 actual=1.0; breakout actual=0.8"
++    },
++    {
++      "test": "Reject nonfinite parameter",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "NaN parameter accepted=True"
++    },
++    {
++      "test": "Parameter bounds respect available lookback",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Accepted configuration needs more than fetch caps (50 signal/250 macro): errors=[]; ATR=None"
++    },
++    {
++      "test": "Hysteresis counts unique bars",
++      "kind": "original strategy",
++      "status": "FAIL",
++      "detail": "Same bar evaluated twice changes active regime to breakout"
++    },
++    {
++      "test": "EMA200 warmup stable under regime transition",
++      "kind": "sensitivity diagnostic",
++      "status": "SENSITIVITY",
++      "detail": "EMA200 using 500 bars=104.104164; using fetched 250=100.000000"
++    },
++    {
++      "test": "Negative residual is exposure, not flat",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "Unexpected short -1 share is reported remaining=0.0"
++    },
++    {
++      "test": "Protection independent of historical data outage",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Unprotected position during bar endpoint failure: protection/exit actions=0"
++    },
++    {
++      "test": "BTC residual uses instrument precision",
++      "kind": "original helper",
++      "status": "FAIL",
++      "detail": "0.00009 BTC ($9 at synthetic $100k) reported remaining=0.0"
++    },
++    {
++      "test": "Failed stop replacement preserves prior risk floor",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Failed replacement after cancel loses prior stop floor: stored stop=None"
++    },
++    {
++      "test": "ATR gap formula and insufficient macro history",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Gap TR=[12]; constant-range ATR=2.0; short macro history returns unknown"
++    },
++    {
++      "test": "Exclude forming candle",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Forming candle removed: remaining bars=1"
++    },
++    {
++      "test": "Macro fails closed",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Insufficient macro history allows entry=False"
++    },
++    {
++      "test": "Unknown open-order count prevents duplicate stop",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Unknown open-order inventory: replacement orders=0"
++    },
++    {
++      "test": "Hung-stop emergency bypasses spread",
++      "kind": "positive control",
++      "status": "PASS",
++      "detail": "Flash gap past stop-limit, wide spread: emergency sell attempted=True (cancellation race tested separately)"
++    },
++    {
++      "test": "EOD retries until actually flat",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "EOD already marked, residual 5 shares: liquidation retry count=0"
++    },
++    {
++      "test": "Scalp obeys documented time-decay exit",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "3-hour losing scalp, both orders open: time-decay sell count=0"
++    },
++    {
++      "test": "Unmeasurable account risk blocks new entry",
++      "kind": "original main loop",
++      "status": "FAIL",
++      "detail": "Cannot measure daily risk: new entries=1"
++    },
++    {
++      "test": "Concurrent state writer cannot resurrect cleared position",
++      "kind": "actual SQLite ordered concurrency",
++      "status": "FAIL",
++      "detail": "Bot reads state; dashboard clears; bot writes stale state: entry resurrected=100.0"
++    },
++    {
++      "test": "ATR-fallback bracket payload is constructible",
++      "kind": "installed SDK offline validation",
++      "status": "PASS",
++      "detail": "SDK constructor accepts; server validation remains untested"
++    }
++  ]
++}
+\ No newline at end of file
+-- 
+2.54.0 (Apple Git-157)
+
