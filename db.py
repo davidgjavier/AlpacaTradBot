@@ -14,6 +14,7 @@ no explicit file locking needed beyond WAL + a busy_timeout.
 """
 
 import sqlite3
+import math
 from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
@@ -47,6 +48,8 @@ def db_conn():
 
 def init_db():
     with db_conn() as conn:
+        # Serialize schema inspection and upgrades across process startup.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS control (
                 symbol TEXT PRIMARY KEY,
@@ -102,6 +105,12 @@ def init_db():
             conn.execute("ALTER TABLE trade_history ADD COLUMN slippage REAL")
         except sqlite3.OperationalError:
             pass  # column already exists — this file predates it
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(trade_history)")}
+        if "execution_key" not in columns:
+            conn.execute("ALTER TABLE trade_history ADD COLUMN execution_key TEXT")
+        # NULL keys preserve legacy callers; existing rows are not rewritten.
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_trade_execution_key "
+                     "ON trade_history(execution_key)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS equity_baseline (
                 key TEXT PRIMARY KEY,
@@ -394,19 +403,47 @@ def clear_position_state(symbol):
 TAKER_FEE_RATE = 0.0025  # 0.25%, matches the spec's "0.25% taker entry and exit"
 
 
-def log_trade(symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time, exit_reason, slippage=None):
+class ExecutionKeyConflict(ValueError):
+    """An already-recorded terminal execution has inconsistent identity/quantity."""
+
+
+def log_trade(symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time,
+              exit_reason, slippage=None, execution_key=None):
+    """Keyed terminal executions insert once; replay returns the original row.
+
+    This deduplicates accounting only, not external broker side effects. Prices
+    are never silently replaced on replay. Legacy callers remain unkeyed.
+    """
+    if execution_key is not None:
+        if not isinstance(execution_key, str) or not execution_key.strip():
+            raise ValueError("execution_key must be nonempty")
+        if not math.isfinite(qty) or qty <= 0:
+            raise ValueError("keyed execution quantity must be finite and positive")
     gross_pnl = (exit_price - entry_price) * qty
     fees_paid = (entry_price + exit_price) * qty * TAKER_FEE_RATE
     net_pnl = gross_pnl - fees_paid
     with db_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO trade_history "
             "(symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time, "
-            "exit_reason, gross_pnl, fees_paid, net_pnl, slippage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "exit_reason, gross_pnl, fees_paid, net_pnl, slippage, execution_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(execution_key) DO NOTHING",
             (symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time,
-             exit_reason, gross_pnl, fees_paid, net_pnl, slippage),
+             exit_reason, gross_pnl, fees_paid, net_pnl, slippage, execution_key),
         )
-    return {"gross_pnl": gross_pnl, "fees_paid": fees_paid, "net_pnl": net_pnl, "slippage": slippage}
+        replayed = cur.rowcount == 0
+        row = conn.execute("SELECT * FROM trade_history WHERE execution_key = ?",
+                           (execution_key,)).fetchone() if replayed else conn.execute(
+                               "SELECT * FROM trade_history WHERE id = ?", (cur.lastrowid,)).fetchone()
+        if replayed and (row["symbol"], row["strategy"], row["entry_time"],
+                         row["entry_price"], row["qty"]) != (
+                             symbol, strategy, entry_time, entry_price, qty):
+            raise ExecutionKeyConflict("Conflicting terminal execution: " + execution_key)
+        result = dict(row)
+        result["replayed"] = replayed
+        result["price_discrepancy"] = row["exit_price"] != exit_price or row["exit_reason"] != exit_reason
+        return result
 
 
 def get_recent_trades(symbol=None, limit=50):

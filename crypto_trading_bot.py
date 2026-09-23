@@ -870,9 +870,15 @@ def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp
     nothing happens this call: no trade row, no phase change, no stop cancel or
     placement, and persisted state (incl. the TP reference) is untouched, so the
     next cycle re-runs this exact reconciliation. This makes Target-1 recording
-    idempotent across failed reads and restarts. (No arithmetic fallback: a
+    retryable across failed reads. Durable execution keys below prevent duplicate
+    trade rows across restarts; broker side effects still need recovery. (No arithmetic fallback: a
     later cycle's observed qty is already net of the fill, so subtracting the
     cumulative fill again understated the position — review of 51bbd91.)"""
+    broker_order_id = fs.get("id")
+    if fs.get("state") not in ("FILLED", "TERMINAL") or not broker_order_id:
+        log("[STRATEGY: SCALP] Cannot record Target 1 without a terminal outcome and canonical broker order ID; reconciliation remains pending.")
+        return
+    execution_key = f"alpaca:order:{broker_order_id}:target1"
     actual = _position_qty_strict()
     if actual is None:
         log(f"[STRATEGY: SCALP] POSITION UNKNOWN after Target-1 order {tp_ref} reported {fs.get('filled_qty')} filled — "
@@ -893,10 +899,14 @@ def _scalp_advance_after_target1(pos_state, entry, entry_time, peak, stop_id, tp
                 "price as an ESTIMATE, P&L is an estimate and slippage is unknown — reconcile against broker activities.")
     trade = db.log_trade(SYMBOL, "SCALP", entry_price=entry, exit_price=exit_price, qty=sold,
                           entry_time=entry_time, exit_time=datetime.now(timezone.utc).isoformat(),
-                          exit_reason=reason, slippage=slippage)
-    log(f"[STRATEGY: SCALP] Target 1 CONFIRMED — order {fs.get('id') or tp_ref} {fs.get('status')}, filled {sold:.6f} BTC "
-        f"{'@ $' + format(avg, '.2f') if avg is not None else '(price unconfirmed)'}. "
-        f"Trade logged ({reason}) — gross ${trade['gross_pnl']:.2f}, fees ${trade['fees_paid']:.2f}, net ${trade['net_pnl']:.2f}.{note}")
+                          exit_reason=reason, slippage=slippage, execution_key=execution_key)
+    if trade.get("replayed"):
+        log(f"[STRATEGY: SCALP] Target 1 already recorded for {broker_order_id}; reusing row {trade.get('id')}, not another sale."
+            + (" Price evidence differs; stored accounting retained pending reconciliation." if trade.get("price_discrepancy") else ""))
+    else:
+        log(f"[STRATEGY: SCALP] Target 1 CONFIRMED — order {fs.get('id') or tp_ref} {fs.get('status')}, filled {sold:.6f} BTC "
+            f"{'@ $' + format(avg, '.2f') if avg is not None else '(price unconfirmed)'}. "
+            f"Trade logged ({reason}) — gross ${trade['gross_pnl']:.2f}, fees ${trade['fees_paid']:.2f}, net ${trade['net_pnl']:.2f}.{note}")
     if stop_id and stop_order_still_open(stop_id) and not cancel_and_confirm(stop_id):
         log("[STRATEGY: SCALP]  Couldn't confirm the old stop was cancelled — keeping it (it still protects its quantity); breakeven stop will be placed next cycle.")
         db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=stop_id, stop_price=pos_state.get("stop_price"),
