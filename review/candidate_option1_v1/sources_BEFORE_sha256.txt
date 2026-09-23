@@ -1,0 +1,2 @@
+b0a197267e1f522646428bf0c47b503a7e5ca53ad53a1825f975d13f39c8fd0a  review/candidates/option1/crypto_trading_bot_opt1.py
+b0a197267e1f522646428bf0c47b503a7e5ca53ad53a1825f975d13f39c8fd0a  review/drafts/crypto_trading_bot_R1v2.py
