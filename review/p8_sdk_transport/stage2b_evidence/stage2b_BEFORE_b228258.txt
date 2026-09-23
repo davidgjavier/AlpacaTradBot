@@ -1,0 +1,101 @@
+# Stage 2b suite (8) vs BASELINE b228258 (fix 900d511), 2026-09-23 09:22 AM PDT
+test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
+If the worker cannot record that its request finished, the id must stay 'in flight'. ... FAIL
+test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
+Codex reviewer_checks.py case 1, as assertions. ... FAIL
+test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... FAIL
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:621: ResourceWarning: unclosed file <_io.BufferedReader name=7>
+  outcome.errors.clear()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:621: ResourceWarning: unclosed file <_io.BufferedReader name=9>
+  outcome.errors.clear()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... FAIL
+test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget) ... FAIL
+test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
+Codex reviewer_checks.py case 2, as an assertion. ... FAIL
+test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
+Another connection holds the write lock after the POST; the post-POST record must not ... FAIL
+test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault) ... FAIL
+
+======================================================================
+FAIL: test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
+If the worker cannot record that its request finished, the id must stay 'in flight'.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 67, in test_completion_bookkeeping_failure_keeps_ownership_conservative
+    self.assertEqual(state(db, "r5-a2"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+======================================================================
+FAIL: test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
+Codex reviewer_checks.py case 1, as assertions.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 44, in test_second_gateway_cannot_abandon_or_release_while_post_in_flight
+    self.assertNotEqual(a.state, "ABANDONED", "second gateway bypassed active submission ownership")
+AssertionError: 'ABANDONED' == 'ABANDONED' : second gateway bypassed active submission ownership
+
+======================================================================
+FAIL: test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 117, in test_other_process_cannot_abandon_while_owner_post_in_flight
+    self.assertEqual(state(db, "r5-xproc"), "UNRESOLVED", "other process bypassed submission ownership")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+ : other process bypassed submission ownership
+
+======================================================================
+FAIL: test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 129, in test_owner_crash_preserves_uncertainty
+    self.assertEqual(state(db, "r5-xproc"), "UNRESOLVED",
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+ : owner disappearance treated as proof the order cannot arrive
+
+======================================================================
+FAIL: test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 161, in test_budget_covers_slow_reconcile_after_fast_ambiguous_post
+    self.assertLess(el, 0.6 + self.SLACK, f"submit took {el:.3f}s for a 0.6s budget")
+AssertionError: 3.0326565420000002 not less than 0.7 : submit took 3.033s for a 0.6s budget
+
+======================================================================
+FAIL: test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
+Codex reviewer_checks.py case 2, as an assertion.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 148, in test_codex_case_budget_covers_reconciliation
+    self.assertLess(el, .05 + self.SLACK, f"submit took {el:.3f}s for a 0.05s end-to-end budget")
+AssertionError: 0.3319425840000001 not less than 0.15000000000000002 : submit took 0.332s for a 0.05s end-to-end budget
+
+======================================================================
+FAIL: test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
+Another connection holds the write lock after the POST; the post-POST record must not
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 187, in test_database_lock_wait_counts_against_budget
+    self.assertLess(el, 0.5 + self.SLACK, f"submit waited {el:.3f}s on a DB lock with a 0.5s budget")
+AssertionError: 10.335984709 not less than 0.6 : submit waited 10.336s on a DB lock with a 0.5s budget
+
+======================================================================
+FAIL: test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_stage2b.py", line 204, in test_default_gateway_never_releases_the_entry_lock
+    self.assertTrue(g.entries_locked()[0], "operational lock release must be disabled by default")
+AssertionError: False is not true : operational lock release must be disabled by default
+
+----------------------------------------------------------------------
+Ran 8 tests in 16.442s
+
+FAILED (failures=8)
