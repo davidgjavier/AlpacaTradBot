@@ -1,8 +1,12 @@
-"""DRAFT v2 (not adopted) — D10 legacy-state check against a DAVID-SUPPLIED broker snapshot. Schema 2.
+"""DRAFT v2.1 (not adopted) — D10 legacy-state check against a DAVID-SUPPLIED broker snapshot. Schema 2.
 
 Pure and read-only: no broker calls, no DB writes. An offline check cannot establish current broker truth. It only
 validates that a snapshot taken at time T is well-formed, complete by its own attestation, and consistent with the
 DB. Any resolution must also pass live_gate() at apply time against the bot's own fresh strict reads.
+
+CHRONOLOGY CONVENTION: taken_at is the single capture instant that every list reflects. Therefore fill coverage must
+end exactly at taken_at (covers_from < covers_to == taken_at), and no fill may be later than taken_at. Freshness
+rules (taken_at <= now, max_age_s) are unchanged.
 
 REMAINING GAP (not closable here): live_gate() and the subsequent action are not atomic. State can change between
 the gate's reads and the order that follows (manual trades, fills, other processes). The bot's action path still
@@ -150,10 +154,15 @@ def check(snapshot, db, expected):
         if cov_from is None or cov_to is None:
             block.append("completeness.fills coverage window missing/invalid")
         else:
+            # Chronology convention (v2.1): taken_at is the single capture instant every list reflects.
+            if cov_from >= cov_to:
+                block.append("fill coverage window is inverted or empty (covers_from must be before covers_to)")
             if day_start and cov_from > day_start:
                 block.append("fill coverage starts after the breaker day began")
             if taken and cov_to < taken:
                 block.append("fill coverage ends before taken_at")
+            if taken and cov_to > taken:
+                block.append("fill coverage ends after taken_at (cannot cover time after the capture instant)")
     orders, fills = snapshot.get("open_orders"), snapshot.get("fills")
     if not isinstance(orders, list):
         block.append("open_orders missing or not a list")
@@ -165,6 +174,9 @@ def check(snapshot, db, expected):
         block.extend(_order_problems(o, symbol, f"open_orders[{i}]"))
     for i, f in enumerate(fills):
         block.extend(_fill_problems(f, symbol, cov_from, cov_to, f"fills[{i}]"))
+        ft = _ts(f.get("time")) if isinstance(f, dict) else None
+        if ft is not None and taken is not None and ft > taken:
+            block.append(f"fills[{i}]: time is later than taken_at (impossible chronology)")
     if not block:
         ps, lq = db.get("position_state") or {}, db.get("liquidation_state") or {}
         known_ids = {x for x in (ps.get("stop_order_id"), ps.get("take_profit_order_id"), lq.get("order_id")) if x}

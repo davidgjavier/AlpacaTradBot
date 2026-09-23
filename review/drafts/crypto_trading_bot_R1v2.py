@@ -824,8 +824,11 @@ def _r1_apply_operator_resolution(liq):
     attempt: schema 2, integer attempt == pending attempt, cid == pending client id, escalation_id == the CURRENT
     escalation, and an unused nonce. It is consumed exactly once (history), never re-evaluated, never reusable.
     found:      broker order fetched by id must have client_order_id == pending cid, same symbol, side sell.
-    not_placed: fresh broker checks: cid lookup is a structured NOT_FOUND, cid absent from open orders, and the
+    not_placed: CONTRADICTION CHECKS ONLY: cid lookup is a structured NOT_FOUND, cid absent from open orders, and the
                 position has not decreased since the attempt; then EXACTLY the next attempt number is authorized.
+                These negative lookups do NOT prove non-placement: an accepted but not-yet-visible order passes them
+                all, and the result is a second sell (documented risk test R_DocumentedRisk). Trust decision; the
+                writer is not built and the policy is pending David's approval.
     Unverifiable (lookup/position UNKNOWN) -> retried next cycle, not consumed. The writer tool does not exist."""
     res = liq.get("operator_resolution")
     if not res:
@@ -911,7 +914,8 @@ def _r1_apply_operator_resolution(liq):
     liq.update(client_order_id=None, order_id=None, authorized_attempt=int(liq.get("attempt") or 0) + 1)
     liq.pop("inflight", None)
     _r1_consume(liq, res, "applied")
-    return True, f"operator resolution NOT_PLACED verified and applied for {cid}: attempt {liq['authorized_attempt']} authorized once"
+    return True, (f"operator resolution NOT_PLACED applied for {cid} (operator assertion; no contradiction found — "
+                  f"NOT proof of non-placement): attempt {liq['authorized_attempt']} authorized once")
 
 
 def _r1_unresolved(liq, kind):

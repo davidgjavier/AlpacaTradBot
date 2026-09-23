@@ -1,6 +1,6 @@
 --- crypto_trading_bot.py	2026-09-23 12:01:47
-+++ review/drafts/crypto_trading_bot_R1v2.py	2026-09-23 12:44:46
-@@ -776,8 +776,173 @@
++++ review/drafts/crypto_trading_bot_R1v2.py	2026-09-23 12:55:26
+@@ -776,8 +776,177 @@
  # order without a confirmed quantity is what this stage forbids; choosing a different
  # unknown-quantity policy is pending decision D8.
  LIQ_FLAT_BTC = 0.0001
@@ -20,8 +20,8 @@
 +# The bounds are escalation thresholds, NOT a proof that a later resubmit would be safe.
 +R1_MIN_CHECKS = 3          # draft value
 +R1_WINDOW_S = 900          # draft value
-+
-+
+ 
+ 
 +def _r1_now():
 +    return time.time()
 +
@@ -32,8 +32,8 @@
 +        hist.append(dict(liq["escalated"], resolved_by=how, resolved_at=datetime.now(timezone.utc).isoformat()))
 +        liq["escalation_history"] = hist
 +        liq.pop("escalated", None)
- 
- 
++
++
 +def _r1_sym(x):
 +    return str(x or "").replace("/", "").upper()
 +
@@ -52,8 +52,11 @@
 +    attempt: schema 2, integer attempt == pending attempt, cid == pending client id, escalation_id == the CURRENT
 +    escalation, and an unused nonce. It is consumed exactly once (history), never re-evaluated, never reusable.
 +    found:      broker order fetched by id must have client_order_id == pending cid, same symbol, side sell.
-+    not_placed: fresh broker checks: cid lookup is a structured NOT_FOUND, cid absent from open orders, and the
++    not_placed: CONTRADICTION CHECKS ONLY: cid lookup is a structured NOT_FOUND, cid absent from open orders, and the
 +                position has not decreased since the attempt; then EXACTLY the next attempt number is authorized.
++                These negative lookups do NOT prove non-placement: an accepted but not-yet-visible order passes them
++                all, and the result is a second sell (documented risk test R_DocumentedRisk). Trust decision; the
++                writer is not built and the policy is pending David's approval.
 +    Unverifiable (lookup/position UNKNOWN) -> retried next cycle, not consumed. The writer tool does not exist."""
 +    res = liq.get("operator_resolution")
 +    if not res:
@@ -139,7 +142,8 @@
 +    liq.update(client_order_id=None, order_id=None, authorized_attempt=int(liq.get("attempt") or 0) + 1)
 +    liq.pop("inflight", None)
 +    _r1_consume(liq, res, "applied")
-+    return True, f"operator resolution NOT_PLACED verified and applied for {cid}: attempt {liq['authorized_attempt']} authorized once"
++    return True, (f"operator resolution NOT_PLACED applied for {cid} (operator assertion; no contradiction found — "
++                  f"NOT proof of non-placement): attempt {liq['authorized_attempt']} authorized once")
 +
 +
 +def _r1_unresolved(liq, kind):
@@ -174,7 +178,7 @@
  def _open_sell_orders_strict():
      """Open SELL orders for SYMBOL, or None if the broker's answer is unknown."""
      try:
-@@ -817,7 +982,22 @@
+@@ -817,7 +986,22 @@
          liq = {"reason": reason, "day_stamp": day_stamp, "attempt": 0, "order_id": None,
                 "client_order_id": None, "started": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")}
          db.set_liquidation_state(SYMBOL, **liq)
@@ -198,7 +202,7 @@
      ref = liq.get("order_id") or (("cid:" + liq["client_order_id"]) if liq.get("client_order_id") else None)
      if ref:
          fs = get_order_fill_state(ref)
-@@ -829,11 +1009,14 @@
+@@ -829,11 +1013,14 @@
              log(f"  Liquidation sell {ref} still working (filled {fs.get('filled_qty')}) — waiting; no repeat sell.")
              return "PENDING"
          if fs["state"] == "UNKNOWN":
@@ -218,7 +222,7 @@
      # 2. Every other open sell can still execute (and reserves quantity): cancel, then CONFIRM gone.
      opens = _open_sell_orders_strict()
      if opens is None:
-@@ -856,7 +1039,13 @@
+@@ -856,7 +1043,13 @@
      # 4. Persist intent BEFORE submitting, then sell exactly the post-reconciliation quantity.
      attempt = int(liq.get("attempt") or 0) + 1
      cid = f"liq-{liq.get('started')}-{attempt}"

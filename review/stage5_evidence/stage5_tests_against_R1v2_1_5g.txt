@@ -1,0 +1,44 @@
+test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_partial_flatten_keeps_liquidation_pending_until_flat (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_other_open_sells_are_cancelled_and_confirmed_before_reselling (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_working_sell_is_reconciled_not_repeated (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_pending_liquidation_survives_restart (test_stage5_liquidation.C_RestartRecovery) ... ok
+test_restart_after_submit_before_id_persisted_does_not_double_sell (test_stage5_liquidation.C_RestartRecovery)
+Crash between submitting the liquidation sell and recording its id: the order is found by its ... ok
+test_eventual_confirmed_flat_after_failures_completes (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_stale_read_does_not_size_a_protective_stop_after_partial (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_success_then_failed_read_is_not_a_quantity (test_stage5_liquidation.D_IntermittentPositionReads)
+verify_sell_filled: a good read (0.3) followed only by failures must return UNKNOWN (None). ... ok
+test_unreadable_position_while_pending_takes_no_action_and_no_entry (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_liquidation_continues_after_day_rollover_and_blocks_entries (test_stage5_liquidation.E_DayRollover) ... ok
+test_failed_post_cancel_read_submits_nothing_and_stays_pending (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... ok
+test_fill_during_cancellation_resizes_the_sell (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... ok
+test_zero_position_cancels_and_confirms_leftover_sell_then_completes (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_other_open_sell_and_unknown_order_list_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_uncancellable_working_sell_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_unknown_own_order_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_crash_between_completion_writes_keeps_latch_and_converges (test_stage5c_latch_and_crash.C_CrashWindows) ... ok
+test_intent_persisted_but_never_sent_is_resubmitted_once (test_stage5c_latch_and_crash.C_CrashWindows) ... FAIL
+test_manually_installed_new_day_state_allows_entry (test_stage5c_latch_and_crash.L_SameDayLatch)
+LABEL (accurate): installs the state reset_day_if_needed() WOULD return on a new UTC day (new ... ok
+test_pending_liquidation_still_runs_on_latched_day (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_recovered_pl_does_not_reopen_entries_same_day (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_threshold_unchanged (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_eventual_visibility_completes_with_a_single_sell (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_invisible_accepted_sell_is_not_followed_by_a_second_sell (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_invisible_order_filled_position_flat_is_not_completed_until_reconciled (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_restart_while_invisible_does_not_resubmit (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_escalates_after_bound_without_resubmitting (test_stage5d_visibility.W_DraftEscalation) ... ok
+
+======================================================================
+FAIL: test_intent_persisted_but_never_sent_is_resubmitted_once (test_stage5c_latch_and_crash.C_CrashWindows)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5c_latch_and_crash.py", line 125, in test_intent_persisted_but_never_sent_is_resubmitted_once
+    self.assertAlmostEqual(b.qty, 0.0)
+AssertionError: 0.5 != 0.0 within 7 places (0.5 difference)
+
+----------------------------------------------------------------------
+Ran 28 tests in 0.594s
+
+FAILED (failures=1)

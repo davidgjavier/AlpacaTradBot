@@ -150,9 +150,10 @@ An offline script **cannot establish current broker truth**. The check validates
 - **`found`:** the broker order fetched by id must have `client_order_id` == the pending cid, the same
   symbol, and side sell. **Assumption:** an order fetchable through this account's client belongs to this
   account; the order object carries no account id.
-- **`not_placed`:** checked **freshly** at apply time. The client-id lookup must be a structured
-  NOT_FOUND, the cid absent from open orders, and the position not reduced since the attempt. If any
-  lookup is UNKNOWN, the record isn't consumed; it's retried next cycle.
+- **`not_placed`:** at apply time the bot only checks for **contradiction**: the client-id lookup is a
+  structured NOT_FOUND, the cid is absent from open orders, and the position is not reduced since the
+  attempt. **These negative lookups do not prove non-placement** (see §10). If any lookup is UNKNOWN, the
+  record isn't consumed; it's retried next cycle.
 - **Crash after applying:** exactly one new attempt (tested; the crash is asserted to fire).
 - **Authentication:** `by`/`evidence` are **not** authentication. Records are assertions; the bot
   verifies what the broker can confirm. `not_placed` remains a **trust decision**, because absence can't
@@ -179,11 +180,78 @@ pagination really happened.
 
 **Remaining risks and untested possibilities:**
 - Wrong-but-plausible operator input: a `not_placed` for an attempt the broker simply hasn't surfaced
-  yet, which passes all fresh checks, still produces a second sell. **Untested possibility; inherent in
-  the trust decision.**
+  yet passes all contradiction checks and produces a second sell. **Reproduced end to end in Stage 5g**
+  (§10); inherent in the trust decision.
 - A position reduced by an unrelated process makes `not_placed` fail closed (liveness cost).
 - Account binding of `found` relies on the client being bound to one account. D7 defines the account
   key.
 - An attested-but-false completeness block would pass.
 - Clock jumps affect escalation timing.
 - Unchanged: no bound on exposure duration or loss while waiting (D8).
+
+
+## 10. v2.1 addendum (Stage 5g) — after Codex's review of ca18144
+
+### Policy risk (not a coding defect): `not_placed` on an accepted-but-hidden order
+
+**Reproduced end to end, and kept as a documented-risk test**
+(`R_DocumentedRisk.test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes`).
+
+A correctly bound `not_placed`, applied while the original accepted sell is still invisible:
+- passes every contradiction check;
+- produces **2 submissions**;
+- ends with the liquidation **completed** (`pending=false`) while the first accepted sell is **still
+  outstanding**.
+
+**Negative broker lookups do not prove non-placement.** The test asserts this undesired behavior on
+purpose, so any change to it is noticed; it is not an acceptance test.
+
+- **The writer stays unbuilt.** This path must **not** be enabled under routine delegated technical
+  authority.
+- **The choice is David's:**
+  - keep `not_placed` with this risk accepted;
+  - remove `not_placed` entirely (only broker visibility or `found` can resolve; liveness cost: possibly
+    indefinite pending);
+  - replace it with a stronger evidence requirement (e.g. the broker's full order history for the cid
+    over the window, plus account activities). Even that remains an assertion, not proof.
+
+### Coding defect fixed: snapshot chronology (D10 v2.1)
+
+**Convention:** `taken_at` is the single capture instant every list reflects. So fill coverage must be
+`covers_from < covers_to == taken_at`, and no fill may be later than `taken_at`. Freshness thresholds are
+**unchanged** (`taken_at ≤ now`, `max_age_s`).
+
+| Case | Before (ca18144 draft) | After |
+|---|---|---|
+| Codex counterexample: coverage and a fill dated tomorrow | **OK_FOR_REVIEW** | BLOCK |
+| A fill later than `taken_at` (coverage stretched past it) | OK | BLOCK |
+| Coverage ending after `taken_at` | OK | BLOCK |
+| Inverted coverage (isolated) | OK | BLOCK ("inverted") |
+| Empty window (`covers_from == covers_to`) | OK | BLOCK |
+| **Controls:** fill exactly at `taken_at` and at `covers_from`; `covers_from` at/before day start; `taken_at == now`; age exactly max | OK | **OK** (unchanged) |
+
+**Alternative, not adopted (would need review):** a capture *interval* (`capture_started_at` ≤ each read ≤
+`capture_ended_at`) would admit exporters that read lists at different moments. It adds fields but **no**
+new thresholds. The single-instant rule is stricter and simpler.
+
+### `found` contract assumptions (NOT tested against a real broker)
+
+- **Account binding:** the order object carries no account id. The bot assumes an order fetchable through
+  its client belongs to its account (a single-account client; the account key is D7).
+- **Returned order details:** the bot trusts the broker response's `client_order_id`, `symbol` and
+  `side`. Missing or renamed fields cause rejection (fail closed). Symbol comparison normalizes `/`
+  (`BTC/USD` vs `BTCUSD`), which is **assumed** from Alpaca conventions.
+- The fetched order's **status and fill** are not checked at resolution time. They are reconciled on
+  the next step through the normal matrix.
+
+### Concurrency / compare-and-swap limitations (NOT tested)
+
+- `liquidation_state` writes are **full overwrites without compare-and-swap**. An operator record
+  written between the bot's read and its next write can be **silently lost**; it is overwritten with the
+  bot's copy.
+  - Not reproduced here; there is no concurrent-writer test.
+  - Mitigation proposal: a version column with a conditional update, and the (future) writer refusing on
+    a version mismatch.
+- The same applies to any other process writing `position_state` (audit item "Concurrent state writer…",
+  still FAIL).
+- A single bot process is assumed. Two bot processes would break every exactly-once argument above.
