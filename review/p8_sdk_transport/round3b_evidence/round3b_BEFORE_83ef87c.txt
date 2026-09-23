@@ -1,0 +1,157 @@
+# Round-3b suite (19) vs BASELINE 83ef87c (fix 344dcb2), 2026-09-23 08:59 AM PDT
+test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... FAIL
+test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
+Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... FAIL
+test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
+test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... FAIL
+test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... FAIL
+test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... FAIL
+test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
+test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
+test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... FAIL
+test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... FAIL
+test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... FAIL
+test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... FAIL
+test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
+test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
+Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
+test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
+test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... FAIL
+test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... FAIL
+test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... FAIL
+test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... FAIL
+
+======================================================================
+FAIL: test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 142, in test_abandon_refused_when_fresh_check_cannot_be_persisted
+    self.assertEqual(state(db, "r3b"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+======================================================================
+FAIL: test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
+Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 93, in test_codex_reproduction_all_reads_fail
+    self.assertTrue(g.entries_locked()[0], "entry lock released although every broker read failed")
+AssertionError: False is not true : entry lock released although every broker read failed
+
+======================================================================
+FAIL: test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 104, in test_lookup_negative_but_listing_fails_refuses_abandon
+    self.assertEqual((a.state, state(db, "r3b")), ("UNRESOLVED", "UNRESOLVED"))
+AssertionError: Tuples differ: ('ABANDONED', 'ABANDONED') != ('UNRESOLVED', 'UNRESOLVED')
+
+First differing element 0:
+'ABANDONED'
+'UNRESOLVED'
+
+- ('ABANDONED', 'ABANDONED')
++ ('UNRESOLVED', 'UNRESOLVED')
+
+======================================================================
+FAIL: test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 111, in test_lookup_unavailable_even_with_complete_listing_refuses_abandon
+    self.assertEqual(state(db, "r3b"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+======================================================================
+FAIL: test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 129, in test_release_refused_when_broker_reads_fail_after_abandon
+    self.assertTrue(gw.entries_locked()[0])
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 197, in test_later_scan_finding_duplicate_is_conflict
+    self.assertEqual(state(db, "r3b-u"), "CONFLICT")
+AssertionError: 'ACCEPTED' != 'CONFLICT'
+- ACCEPTED
++ CONFLICT
+
+
+======================================================================
+FAIL: test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 177, in test_uncertainty_survives_restart
+    self.assertIn("r3b-u", queued(db))
+AssertionError: 'r3b-u' not found in []
+
+======================================================================
+FAIL: test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 204, in test_unverified_order_cannot_be_abandoned
+    self.assertTrue(gw.entries_locked()[0])
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 171, in test_unverified_uniqueness_stays_monitored_and_locked
+    self.assertIn("r3b-u", queued(db), "uniqueness-unverified order left monitoring")
+AssertionError: 'r3b-u' not found in [] : uniqueness-unverified order left monitoring
+
+======================================================================
+FAIL: test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 271, in test_page_bound_refuses_abandon
+    self.assertEqual(state(db, "r3b-d2"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+======================================================================
+FAIL: test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 265, in test_page_failure_refuses_abandon
+    self.assertEqual(state(db, "r3b-d1"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+======================================================================
+FAIL: test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 285, in test_page_failure_refuses_release
+    self.assertTrue(gw.entries_locked()[0])
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_p8_worktree/review/p8_sdk_transport/proposed/test_p8_round3b.py", line 277, in test_stuck_pagination_refuses_abandon
+    self.assertEqual(state(db, "r3b-d3"), "UNRESOLVED")
+AssertionError: 'ABANDONED' != 'UNRESOLVED'
+- ABANDONED
++ UNRESOLVED
+
+
+----------------------------------------------------------------------
+Ran 19 tests in 1.198s
+
+FAILED (failures=13)
