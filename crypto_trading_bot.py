@@ -795,9 +795,12 @@ def _open_sell_orders_strict():
 def _complete_liquidation(liq, qty):
     log(f"LIQUIDATION COMPLETE — flat confirmed by a strict position read (qty {qty}). "
         f"Reason: {liq.get('reason')}; {liq.get('attempt', 0)} sell attempt(s).")
+    # Stage 5c write order: latch FIRST, pending-liquidation record LAST. A crash between writes
+    # leaves the liquidation pending, so the next cycle re-reconciles and re-completes; every
+    # write is idempotent. (Clearing it first could lose both the latch and the liquidation.)
+    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, liq.get("day_stamp"))
     db.clear_position_state(SYMBOL)
     db.clear_liquidation_state(SYMBOL)
-    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, liq.get("day_stamp"))
     return "FLAT"
 
 
@@ -1261,6 +1264,16 @@ def main():
                     _liquidation_step(qty, reason=f"circuit breaker (P/L ${today_pl:.2f})", day_stamp=today_stamp)
                 else:
                     db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
+
+        # Stage 5c: SAME-DAY LATCH. Once today's breaker is marked, recovering P/L must not
+        # reopen entries before the next UTC day (reset_day_if_needed clears the stamp). A
+        # non-flat position on a latched day (legacy/manual; see D10) keeps normal protection
+        # management below -- both entry paths already require a flat position.
+        if already_flattened_today and qty <= LIQ_FLAT_BTC:
+            log("Daily loss breaker already tripped today (UTC) — new entries stay blocked until the next UTC day, "
+                f"even though P/L is now ${today_pl:.2f}.")
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 

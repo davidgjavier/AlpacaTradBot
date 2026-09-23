@@ -1,0 +1,6 @@
+Identical harness (+3 additive MemoryDB liquidation methods), only bot sources swapped.
+counts 96b2f74: {'PASS': 10, 'FAIL': 26, 'SENSITIVITY': 1, 'HARNESS_ERROR': 1}
+counts stage5c: {'PASS': 11, 'FAIL': 25, 'SENSITIVITY': 1, 'HARNESS_ERROR': 1}
+  CHANGED FAIL -> PASS: Breaker remains latched BTC/USD :: Previously tripped breaker, recovered P/L: new orders=0
+  still FAIL: Breaker remains latched NVDA :: Previously tripped breaker, recovered P/L: new orders=1
+  still FAIL: Breaker must retry residual liquidation :: Exposure remains after earlier flatten failed: flatten retry count=0
