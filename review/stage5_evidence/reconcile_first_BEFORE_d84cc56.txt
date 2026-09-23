@@ -1,0 +1,93 @@
+test_failed_post_cancel_read_submits_nothing_and_stays_pending (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... FAIL
+test_fill_during_cancellation_resizes_the_sell (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... FAIL
+test_zero_position_cancels_and_confirms_leftover_sell_then_completes (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... FAIL
+test_zero_position_with_other_open_sell_and_unknown_order_list_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... FAIL
+test_zero_position_with_uncancellable_working_sell_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... FAIL
+test_zero_position_with_unknown_own_order_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... FAIL
+
+======================================================================
+FAIL: test_failed_post_cancel_read_submits_nothing_and_stays_pending (test_stage5b_reconcile_first.A_ReReadAfterCancellation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 58, in test_failed_post_cancel_read_submits_nothing_and_stays_pending
+    self.assertEqual(market_sells(b), [], "sold without a confirmed post-cancel position")
+AssertionError: Lists differ: [namespace(_kind='market', symbol='BTC/USD[82 chars]-1')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(_kind='market', symbol='BTC/USD', qty=0.5, side='sell', time_in_force='gtc', client_order_id='liq-20260923T185601-1')
+
++ []
+- [namespace(_kind='market',
+-            symbol='BTC/USD',
+-            qty=0.5,
+-            side='sell',
+-            time_in_force='gtc',
+-            client_order_id='liq-20260923T185601-1')] : sold without a confirmed post-cancel position
+
+======================================================================
+FAIL: test_fill_during_cancellation_resizes_the_sell (test_stage5b_reconcile_first.A_ReReadAfterCancellation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 46, in test_fill_during_cancellation_resizes_the_sell
+    self.assertEqual(b.rejections, [], "sold the pre-cancellation quantity; broker rejected it")
+AssertionError: Lists differ: ['{"code":40310000,"message":"insufficient[48 chars])"}'] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+'{"code":40310000,"message":"insufficient balance for BTC (requested: 0.5, available: 0.3)"}'
+
++ []
+- ['{"code":40310000,"message":"insufficient balance for BTC (requested: 0.5, '
+-  'available: 0.3)"}'] : sold the pre-cancellation quantity; broker rejected it
+
+======================================================================
+FAIL: test_zero_position_cancels_and_confirms_leftover_sell_then_completes (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 114, in test_zero_position_cancels_and_confirms_leftover_sell_then_completes
+    self.assertEqual([o for o in b.open_sells()], [], "completed with an executable sell still open")
+AssertionError: Lists differ: [namespace(id='o1', kind='market', qty=0.5[139 chars]-1')] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+namespace(id='o1', kind='market', qty=0.5, side='sell', status=namespace(value='partially_filled'), filled_qty='0.2', filled_avg_price='100.0', client_order_id='liq-20260923T185601-1')
+
++ []
+- [namespace(id='o1',
+-            kind='market',
+-            qty=0.5,
+-            side='sell',
+-            status=namespace(value='partially_filled'),
+-            filled_qty='0.2',
+-            filled_avg_price='100.0',
+-            client_order_id='liq-20260923T185601-1')] : completed with an executable sell still open
+
+======================================================================
+FAIL: test_zero_position_with_other_open_sell_and_unknown_order_list_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 106, in test_zero_position_with_other_open_sell_and_unknown_order_list_stays_pending
+    self.assertTrue(pending(ns), "completed although open orders could not be listed")
+AssertionError: None is not true : completed although open orders could not be listed
+
+======================================================================
+FAIL: test_zero_position_with_uncancellable_working_sell_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 82, in test_zero_position_with_uncancellable_working_sell_stays_pending
+    self.assertTrue(pending(ns), "completed while its own sell was still working")
+AssertionError: None is not true : completed while its own sell was still working
+
+======================================================================
+FAIL: test_zero_position_with_unknown_own_order_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5b_reconcile_first.py", line 94, in test_zero_position_with_unknown_own_order_stays_pending
+    self.assertTrue(pending(ns), "completed although its own order state was UNKNOWN")
+AssertionError: None is not true : completed although its own order state was UNKNOWN
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.087s
+
+FAILED (failures=6)
