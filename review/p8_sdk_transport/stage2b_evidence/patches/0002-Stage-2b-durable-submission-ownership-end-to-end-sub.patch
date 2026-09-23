@@ -1,0 +1,663 @@
+From 25a74d096fbf633bbaa408accf5fb3bfefba760c Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:38:11 -0700
+Subject: [PATCH 2/2] Stage 2b: durable submission ownership, end-to-end submit
+ budget, lock release off
+
+- post_inflight marker set in the intent-creating transaction and cleared only
+  by the POST worker when the request ends; visible to all gateways/processes;
+  survives owner crash (no lease/expiry treated as proof). Abandon/release
+  refuse while set, or after an 'ok:' POST outcome.
+- One monotonic Budget carries submit_deadline_s through POST wait, DB writes
+  (sqlite busy timeout capped to remaining), reconcile reads and scan pages;
+  exhausted -> UNRESOLVED, reconcile deferred.
+- LOCK_RELEASE_ENABLED=False: operational lock release disabled; mechanism
+  tests opt in explicitly (make3, make3b, round-3b gateway()).
+- Worker bookkeeping writes ownership columns only (no state/history), keeping
+  the stage-2 late-completion invariant.
+
+Tests: stage2b 8 (8 fail on b228258; 8 pass); all 103 pass; stable across
+combined, repeated and reversed runs. Codex reviewer_checks.py verbatim:
+abandon refused, lock held, 0.05 s budget -> 0.016 s UNRESOLVED.
+---
+ review/p8_sdk_transport/STAGE2B_REVIEW.md     |  71 ++++++++
+ review/p8_sdk_transport/proposed/broker_io.py | 166 ++++++++++++++----
+ .../proposed/test_p8_round3.py                |   1 +
+ .../proposed/test_p8_round3b.py               |   5 +-
+ .../stage2b_evidence/codex_checks_AFTER.txt   |   4 +
+ .../stage2b_evidence/test_broker_io_AFTER.txt |  38 ++++
+ .../stage2b_evidence/test_p8_round2_AFTER.txt |  25 +++
+ .../stage2b_evidence/test_p8_round3_AFTER.txt |  27 +++
+ .../test_p8_round3b_AFTER.txt                 |  27 +++
+ .../stage2b_evidence/test_p8_round4_AFTER.txt |  17 ++
+ .../test_p8_stage2b_AFTER.txt                 |  24 +++
+ 11 files changed, 374 insertions(+), 31 deletions(-)
+ create mode 100644 review/p8_sdk_transport/STAGE2B_REVIEW.md
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/codex_checks_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_broker_io_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_p8_round2_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_p8_round3_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_p8_round3b_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_p8_round4_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/stage2b_evidence/test_p8_stage2b_AFTER.txt
+
+diff --git a/review/p8_sdk_transport/STAGE2B_REVIEW.md b/review/p8_sdk_transport/STAGE2B_REVIEW.md
+new file mode 100644
+index 0000000..ae90d4f
+--- /dev/null
++++ b/review/p8_sdk_transport/STAGE2B_REVIEW.md
+@@ -0,0 +1,71 @@
++# Stage 2b — Durable submission ownership, end-to-end submit budget, lock release disabled (OFFLINE)
++
++- **Branch:** `review/p8-sdk-wrapper`
++- **Commits:**
++  - `7e8d3f2` — tests only
++  - *fix commit* — see `git log`
++- **Baseline:** `b228258` (Stage-2 fix `900d511`).
++- **Codex reproduction used verbatim:**
++  `…/work/p8_stage2_review/reviewer_checks.py` (sha256 `9fa2f8753f8efe38`). Codex's copies were
++  byte-identical to `b228258`.
++
++## Verdicts (tested offline scope only)
++
++| # | Finding | Baseline | After |
++|---|---|---|---|
++| 1 | Ownership was gateway-local: a 2nd gateway (same process, client and DB) abandoned and released while A's POST was in flight; the order arrived later | Reproduced (ABANDONED, lock false) | **Fixed.** Durable `post_inflight=1` is set in the intent-creating transaction and cleared only by the POST worker when the request really ends. Visible to every gateway and process. Codex script: abandon UNRESOLVED, lock true |
++| 1b | Other process; owner crash (`SIGKILL`) | Reproduced (abandon allowed) | **Fixed.** The marker survives the crash. No lease, expiry or owner disappearance counts as proof. A failed completion write also leaves the marker set |
++| 2 | Submit budget not end-to-end | 0.05 s → 0.332 s; 0.6 s → 3.03 s; DB lock → 10.34 s | **Fixed.** One monotonic Budget covers the POST wait, DB writes (sqlite busy timeout capped to the remaining budget), reconcile reads and scan pages. Exhausted → UNRESOLVED, reconcile deferred. Codex script: 0.016 s |
++| 3 | Lock release enabled operationally | Released by default | **Disabled by default** (`LOCK_RELEASE_ENABLED=False`); the lock is held. The mechanism is testable offline only via explicit opt-in |
++
++An `ok:` POST outcome recorded by the worker also refuses abandon.
++
++## Budget accounting
++
++- Returns within `submit_deadline_s` plus overhead (tests allow 0.10 s; observed ≤ ~0.016 s).
++- POST wait = remaining − 0.05 s final-write reserve − 0.01 s scheduling margin.
++- Reads get `min(configured, remaining − reserves)`.
++- DB busy timeout = `min(5 s, remaining − margin)`. A timed-out write → `persisted=False`, with the
++  known outcome still returned.
++- A budget below the reserves → 0 s POST wait; the POST is still sent; the result is UNRESOLVED.
++- A timed-out request can still complete. Its worker clears the marker and records the outcome as
++  blocking evidence only.
++
++## Integration conflict found and resolved
++
++The first version made the worker append a `POST_FINISHED` history event. That broke the Stage-2
++invariant that a late response never mutates intent state or history. The worker now writes **only**
++the ownership columns (no state, no `updated_ns`, no event). The existing expectation is kept, not
++changed.
++
++## Tests (identical fixtures)
++
++| Suite | Before (`b228258`) | After |
++|---|---|---|
++| `test_p8_stage2b.py` (8; real subprocess and SIGKILL) | **8 fail** | **8 pass** |
++| `test_p8_round4.py` (10) | 10 pass | 10 pass |
++| Stage-1 (85) | 85 pass | 85 pass |
++
++- **Total: 103/103.**
++- **Stability:** 3 combined single-process runs; Stage-2b 5/5; reversed order; no orphan processes.
++- **Changed fixtures (documented):** `make3`, `make3b` and round-3b `gateway()` opt into
++  `lock_release_enabled=True`, because they test the release mechanism. The default-off behavior is
++  asserted by `test_p8_stage2b.D`.
++- **Changed assertions: none.**
++
++## Remaining risks (open)
++
++- **Liveness:** an owner crash mid-POST leaves `post_inflight=1` indefinitely. Abandon is refused and
++  entries stay locked until a reviewed resolution exists (not designed; policy unapproved).
++- **Worker completion write:** uses the store's default busy timeout. If the DB stays locked, it fails
++  and the marker stays set (safe side).
++- **Carried:**
++  - shared `requests.Session` across threads (untested on real network/TLS);
++  - DNS stalls untested;
++  - deadline values unvalidated;
++  - human-resolution policy UNAPPROVED;
++  - CONFLICT and `ACCEPTED_UNVERIFIED` workflows;
++  - normalization assumptions (P3);
++  - intent ↔ `cbf1b9b` accounting;
++  - paper-plan corrections.
++- **Stages 3–5:** not started. Waiting for the saved integration brief.
+diff --git a/review/p8_sdk_transport/proposed/broker_io.py b/review/p8_sdk_transport/proposed/broker_io.py
+index 0e76286..854097d 100644
+--- a/review/p8_sdk_transport/proposed/broker_io.py
++++ b/review/p8_sdk_transport/proposed/broker_io.py
+@@ -49,6 +49,12 @@ DEFAULT_TIMEOUT = (3.05, 10.0)          # (connect, read) seconds — proposal,
+ READ_DEADLINE_S = 8.0                   # WALL-CLOCK budget for one logical read incl. retries (stage 2)
+ SUBMIT_DEADLINE_S = 15.0                # WALL-CLOCK budget the caller waits for the single POST (stage 2)
+ MAX_INFLIGHT_CALLS = 8                  # bound on worker threads (incl. ones abandoned at a deadline)
++# Stage 2b: SUBMIT_DEADLINE_S is the END-TO-END budget of submit(): POST wait + DB writes + any
++# reconcile reads/scan. When it runs out the call returns UNRESOLVED and reconciliation is deferred.
++FINAL_WRITE_RESERVE_S = 0.05            # budget kept back for the final state write
++SCHED_MARGIN_S = 0.01                   # thread start / wake-up overhead
++DB_BUSY_TIMEOUT_S = 5.0                 # sqlite busy timeout when no budget applies (was 10 s)
++LOCK_RELEASE_ENABLED = False            # operational lock release OFF until mechanism + policy approved
+ READ_MAX_ATTEMPTS = 5
+ VISIBILITY_WINDOW_S = 30.0              # before "not found" may be treated as absence (UNVERIFIED value)
+ RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+@@ -173,7 +179,7 @@ class CallRunner:
+             self.inflight -= 1
+ 
+     def run_reserved(self, fn: Callable[[], Any], timeout_s: float,
+-                     on_done: Optional[Callable[[], None]] = None) -> CallOutcome:
++                     on_done: Optional[Callable[[Any, Optional[BaseException]], None]] = None) -> CallOutcome:
+         """on_done runs in the WORKER when the request actually finishes (even after the caller
+         gave up), so callers can track what is still in flight. It must not write intent state."""
+         box, done, flag = {}, threading.Event(), {"abandoned": False}
+@@ -186,7 +192,7 @@ class CallRunner:
+             finally:
+                 if on_done:
+                     try:
+-                        on_done()
++                        on_done(box.get("v"), box.get("e"))
+                     except Exception:  # noqa: BLE001
+                         pass
+                 with self._lock:
+@@ -217,6 +223,17 @@ class CallRunner:
+ DEFAULT_RUNNER = CallRunner()
+ 
+ 
++class Budget:
++    """One monotonic wall-clock budget carried through a complete operation (stage 2b)."""
++
++    def __init__(self, seconds: float):
++        self.seconds = seconds
++        self.deadline = time.monotonic() + seconds
++
++    def remaining(self) -> float:
++        return self.deadline - time.monotonic()
++
++
+ @dataclass
+ class ReadResult:
+     state: str                     # OK | NOT_FOUND | UNAVAILABLE | ERROR
+@@ -303,7 +320,9 @@ CREATE TABLE IF NOT EXISTS intent_events (
+   id INTEGER PRIMARY KEY AUTOINCREMENT, client_order_id TEXT NOT NULL, ts_ns INTEGER NOT NULL,
+   kind TEXT NOT NULL, from_state TEXT, to_state TEXT, operator TEXT, note TEXT, detail TEXT);
+ """
+-INTENT_MIGRATIONS = [("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER"), ("abandoned_by", "TEXT"),
++INTENT_MIGRATIONS = [("post_inflight", "INTEGER NOT NULL DEFAULT 0"), ("post_started_ns", "INTEGER"),
++                     ("post_finished_ns", "INTEGER"), ("post_result", "TEXT"),
++                     ("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER"), ("abandoned_by", "TEXT"),
+                      ("abandoned_ns", "INTEGER"), ("lock_released_by", "TEXT"), ("lock_released_ns", "INTEGER"),
+                      ("conflict_detail", "TEXT")]
+ # States (round 3):
+@@ -331,8 +350,10 @@ _ALLOWED_FROM = {"ACCEPTED": _OPEN + ("ACCEPTED_UNVERIFIED",),
+ 
+ 
+ class IntentStore:
+-    def __init__(self, path: str, fail_hook: Optional[Callable[[str], None]] = None):
+-        self.path, self.fail_hook = path, fail_hook
++    def __init__(self, path: str, fail_hook: Optional[Callable[[str], None]] = None,
++                 busy_timeout_s: float = DB_BUSY_TIMEOUT_S):
++        self.path, self.fail_hook, self.busy_timeout_s = path, fail_hook, busy_timeout_s
++        self._tl = threading.local()               # per-thread busy-timeout override (budgeted callers)
+         with closing(self._c()) as c:
+             c.executescript(INTENT_SCHEMA)
+             have = {r[1] for r in c.execute("PRAGMA table_info(order_intents)")}
+@@ -340,8 +361,23 @@ class IntentStore:
+                 if name not in have:
+                     c.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {typ}")
+ 
++    def bounded(self, timeout_s: Optional[float]):
++        """Context: cap sqlite busy waits for this thread's store calls (stage 2b)."""
++        store = self
++
++        class _Ctx:
++            def __enter__(self_):
++                self_.prev = getattr(store._tl, "timeout", None)
++                store._tl.timeout = timeout_s
++
++            def __exit__(self_, *a):
++                store._tl.timeout = self_.prev
++        return _Ctx()
++
+     def _c(self):
+-        c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
++        t = getattr(self._tl, "timeout", None)
++        t = self.busy_timeout_s if t is None else max(0.001, min(t, self.busy_timeout_s))
++        c = sqlite3.connect(self.path, timeout=t, isolation_level=None)
+         c.execute("PRAGMA journal_mode=WAL")
+         c.execute("PRAGMA synchronous=FULL")      # durable before we act on it
+         return c
+@@ -404,10 +440,13 @@ class IntentStore:
+         pj = json.dumps(payload, sort_keys=True, default=str)
+ 
+         def fn(c):
++            # post_inflight=1 in the SAME transaction: ownership is durable and visible to every
++            # gateway and process before any POST can start (stage 2b).
+             c.execute("INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
+-                      "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
++                      "submit_attempts,created_ns,last_submit_ns,updated_ns,post_inflight,post_started_ns)"
++                      " VALUES (?,?,?,?,?,?,1,?,?,?,1,?)",
+                       (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
+-                       now_ns, now_ns, now_ns))
++                       now_ns, now_ns, now_ns, now_ns))
+             self._event(c, cid, now_ns, "CREATED", None, "SUBMITTING")
+         try:
+             self._txn("create_submitting", fn)
+@@ -453,6 +492,19 @@ class IntentStore:
+             return n == 1
+         return self._txn(f"op_{kind}", fn)
+ 
++    def mark_post_finished(self, cid, result: str, now_ns: int) -> bool:
++        """Called by the POST worker when its request actually ends (possibly after the caller left).
++        Bookkeeping only: clears post_inflight and records the transport outcome; never changes
++        `state`. If this write fails, post_inflight stays 1 (conservative)."""
++        def fn(c):
++            # Columns only: no history event, no `state`/`updated_ns` change. The stage-2 invariant is
++            # that a late response never mutates intent state or history; post_result is used only to
++            # BLOCK resolution (an 'ok:' outcome refuses abandon), never to advance state.
++            n = c.execute("UPDATE order_intents SET post_inflight=0, post_finished_ns=?, post_result=?"
++                          " WHERE client_order_id=?", (now_ns, result[:300], cid)).rowcount
++            return n == 1
++        return self._txn("post_finished", fn)
++
+     def mark(self, cid, state, now_ns, order_id=None, error=None, bump_attempt=False):
+         """Backwards-compatible alias; compare-and-set. Re-submission (attempt bumps) is disabled."""
+         if bump_attempt:
+@@ -598,17 +650,46 @@ class OrderGateway:
+         self.scan_max_pages, self.scan_page_limit = scan_max_pages, scan_page_limit
+         self.runner = CallRunner()                  # stage 2: bounded workers, wall-clock waits
+         self.submit_deadline_s = SUBMIT_DEADLINE_S
+-        self._inflight_lock = threading.Lock()
+-        self._inflight_cids = set()                 # POSTs whose worker has not finished (process-local)
++        self.lock_release_enabled = LOCK_RELEASE_ENABLED   # stage 2b: operationally OFF by default
++        self._tl = threading.local()                       # current end-to-end Budget (per caller thread)
+ 
+     def submit_in_flight(self, cid) -> bool:
+-        with self._inflight_lock:
+-            return cid in self._inflight_cids
++        """DURABLE ownership (stage 2b): true while the intent row says its POST has not finished,
++        whichever gateway/process sent it. Never expires; an owner crash leaves it true (uncertainty
++        preserved). Fail-closed: an unreadable row counts as in flight."""
++        row, err = self._row(cid)
++        if err:
++            return True
++        return bool(row and row.get("post_inflight"))
++
++    def _post_outcome_blocks_resolution(self, cid) -> Optional[str]:
++        row, err = self._row(cid)
++        if err:
++            return f"intent unreadable ({err})"
++        if row is None:
++            return None
++        if row.get("post_inflight"):
++            return "a POST for this id has not finished (any gateway/process; survives crashes)"
++        if (row.get("post_result") or "").startswith("ok:"):
++            return f"the POST for this id was accepted by the broker ({row['post_result']})"
++        return None
++
++    # ---- end-to-end budget helpers
++    def _budget(self) -> Optional[Budget]:
++        return getattr(self._tl, "budget", None)
++
++    def _db_timeout(self) -> Optional[float]:
++        b = self._budget()
++        return None if b is None else max(0.001, b.remaining() - SCHED_MARGIN_S)
+ 
+     def _rk(self) -> dict:
+         """read() kwargs with this gateway's runner (tests may replace self.runner at any time)."""
+         kw = dict(self.read_kw)
+         kw.setdefault("runner", self.runner)
++        b = self._budget()
++        if b is not None:                            # reads get only what the caller's budget allows
++            left = b.remaining() - FINAL_WRITE_RESERVE_S - SCHED_MARGIN_S
++            kw["deadline_s"] = min(kw.get("deadline_s", READ_DEADLINE_S), max(0.0, left))
+         return kw
+ 
+     @staticmethod
+@@ -622,7 +703,8 @@ class OrderGateway:
+     def _row(self, cid):
+         """(row, error). Never raises: a store read failure is reported, not thrown."""
+         try:
+-            return self.store.get(cid), None
++            with self.store.bounded(self._db_timeout()):
++                return self.store.get(cid), None
+         except Exception as e:  # noqa: BLE001
+             return None, f"store read failed: {type(e).__name__}: {e}"
+ 
+@@ -641,13 +723,25 @@ class OrderGateway:
+     def _record(self, cid, to_state, order_id=None, error=None, conflict_detail=None):
+         """(applied, persisted, persistence_error). Never raises."""
+         try:
+-            return (self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error,
+-                                          conflict_detail=conflict_detail), True, None)
++            with self.store.bounded(self._db_timeout()):
++                return (self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error,
++                                              conflict_detail=conflict_detail), True, None)
+         except PersistenceError as e:
+             return False, False, str(e)
+ 
+     # ---------------------------------------------------------------- submit
+     def submit(self, order_request, purpose: str) -> SubmitResult:
++        """End-to-end budget = submit_deadline_s (stage 2b): POST wait, DB writes, reconcile reads and
++        scan all draw on ONE budget. At exhaustion the result is UNRESOLVED and reconciliation is
++        deferred to recover_pending(). A request that timed out may still complete later."""
++        prev = self._budget()
++        self._tl.budget = Budget(self.submit_deadline_s)
++        try:
++            return self._submit(order_request, purpose)
++        finally:
++            self._tl.budget = prev
++
++    def _submit(self, order_request, purpose: str) -> SubmitResult:
+         cid = getattr(order_request, "client_order_id", None)
+         if not cid:
+             raise ValueError("every order must carry a client_order_id (use new_client_order_id)")
+@@ -665,7 +759,8 @@ class OrderGateway:
+             return SubmitResult("NOT_SUBMITTED", cid, persisted=True,
+                                 detail="broker call capacity saturated; nothing sent; no intent created")
+         try:
+-            created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
++            with self.store.bounded(self._db_timeout()):
++                created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
+         except PersistenceError as e:
+             self.runner.release_unused()
+             # History was readable and had no row for this id, so nothing was sent under it.
+@@ -691,14 +786,19 @@ class OrderGateway:
+ 
+     def _post_and_record(self, order_request, cid, payload) -> SubmitResult:
+         """The single POST for this id. Never raises after the POST has been attempted."""
+-        with self._inflight_lock:
+-            self._inflight_cids.add(cid)
+-
+-        def _done():
+-            with self._inflight_lock:
+-                self._inflight_cids.discard(cid)
+-        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), self.submit_deadline_s,
+-                                       on_done=_done)
++        store, now_ns = self.store, self.now_ns
++
++        def _done(value, error):
++            # Runs in the WORKER when the request really ends (maybe after the caller returned).
++            # Bookkeeping only: clears the durable in-flight marker; never changes intent state.
++            if error is None and value is not None:
++                res = f"ok:{getattr(value, 'id', '?')}"
++            else:
++                res = f"error:{type(error).__name__}:{_status(error)}"
++            store.mark_post_finished(cid, res, now_ns())
++        b = self._budget()
++        wait = self.submit_deadline_s if b is None else max(0.0, b.remaining() - FINAL_WRITE_RESERVE_S - SCHED_MARGIN_S)
++        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), wait, on_done=_done)
+         if out.state == "DEADLINE":
+             # The POST may still reach the broker or complete late; its response will be DISCARDED.
+             # Never "not sent": UNRESOLVED, reconciled by the same client id.
+@@ -934,14 +1034,16 @@ class OrderGateway:
+         row, err = self._row(cid)
+         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
+             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
+-        if self.submit_in_flight(cid):
+-            return self._from_row(cid, detail="abandon refused: this process still has the POST for this id in flight")
++        blocked = self._post_outcome_blocks_resolution(cid)
++        if blocked:
++            return self._from_row(cid, detail=f"abandon refused: {blocked}")
+         fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "UNRESOLVED":
+             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+             return fresh
+-        if self.submit_in_flight(cid):
+-            fresh.detail = f"abandon refused: POST for this id in flight; {fresh.detail}"
++        blocked = self._post_outcome_blocks_resolution(cid)
++        if blocked:
++            fresh.detail = f"abandon refused: {blocked}; {fresh.detail}"
+             return fresh
+         refusal = self._negative_check_refusal(fresh)
+         if refusal:
+@@ -962,11 +1064,15 @@ class OrderGateway:
+         Runs a fresh reconcile first (a late order turns it into CONFLICT and keeps the lock).
+         Monitoring continues afterwards; a late order still becomes CONFLICT and re-locks."""
+         self._require_operator(operator, note)
++        if not self.lock_release_enabled:
++            return self._from_row(cid, detail="release refused (lock HELD): operational lock release is DISABLED "
++                                              "until the reviewed mechanism and a separately approved policy allow it")
+         row, err = self._row(cid)
+         if err or row is None or row["state"] != "ABANDONED":
+             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
+-        if self.submit_in_flight(cid):
+-            return self._from_row(cid, detail="release refused (lock HELD): POST for this id still in flight")
++        blocked = self._post_outcome_blocks_resolution(cid)
++        if blocked:
++            return self._from_row(cid, detail=f"release refused (lock HELD): {blocked}")
+         fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "ABANDONED":
+             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
+diff --git a/review/p8_sdk_transport/proposed/test_p8_round3.py b/review/p8_sdk_transport/proposed/test_p8_round3.py
+index 158d2df..760ea9a 100644
+--- a/review/p8_sdk_transport/proposed/test_p8_round3.py
++++ b/review/p8_sdk_transport/proposed/test_p8_round3.py
+@@ -85,6 +85,7 @@ def make3(db=None):
+     clock.t = T0.timestamp()                    # align gateway clock with broker timestamps
+     db = db or os.path.join(tempfile.mkdtemp(), "intents.db")
+     gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
++    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
+     return broker, client, gw, clock, db
+ 
+ 
+diff --git a/review/p8_sdk_transport/proposed/test_p8_round3b.py b/review/p8_sdk_transport/proposed/test_p8_round3b.py
+index e15b58d..e51120c 100644
+--- a/review/p8_sdk_transport/proposed/test_p8_round3b.py
++++ b/review/p8_sdk_transport/proposed/test_p8_round3b.py
+@@ -48,11 +48,14 @@ def make3b(db=None):
+     import os, tempfile
+     db = db or os.path.join(tempfile.mkdtemp(), "intents.db")
+     gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
++    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
+     return broker, client, gw, clock, db
+ 
+ 
+ def gateway(client, db, clock):
+-    return B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
++    gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
++    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
++    return gw
+ 
+ 
+ def unresolved_never_sent(maker=make3b, cid="r3b"):
+diff --git a/review/p8_sdk_transport/stage2b_evidence/codex_checks_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/codex_checks_AFTER.txt
+new file mode 100644
+index 0000000..eb58075
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/codex_checks_AFTER.txt
+@@ -0,0 +1,4 @@
++# Codex reviewer_checks.py (sha256 9fa2f8753f8efe38) run verbatim vs stage-2b fix
++{"case": "same-process second gateway", "original_post_inflight": true, "second_gateway_abandon": "UNRESOLVED", "entry_lock_after_release": true}
++{"late_broker_orders": 1, "posts": 1}
++{"case": "submit budget plus reconciliation", "configured_submit_deadline": 0.05, "elapsed_seconds": 0.016, "state": "UNRESOLVED"}
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_broker_io_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_broker_io_AFTER.txt
+new file mode 100644
+index 0000000..72152d9
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_broker_io_AFTER.txt
+@@ -0,0 +1,38 @@
++# test_broker_io vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++
++----------------------------------------------------------------------
++Ran 30 tests in 3.067s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_p8_round2_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_p8_round2_AFTER.txt
+new file mode 100644
+index 0000000..5d0df56
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_p8_round2_AFTER.txt
+@@ -0,0 +1,25 @@
++# test_p8_round2 vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++
++----------------------------------------------------------------------
++Ran 15 tests in 0.528s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_p8_round3_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_p8_round3_AFTER.txt
+new file mode 100644
+index 0000000..696a352
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_p8_round3_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3 vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
++test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
++test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
++test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
++test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
++test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
++test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
++test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
++test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
++test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
++test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
++test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
++test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
++test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
++
++----------------------------------------------------------------------
++Ran 21 tests in 0.871s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_p8_round3b_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_p8_round3b_AFTER.txt
+new file mode 100644
+index 0000000..0ff5106
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_p8_round3b_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3b vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
++test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
++Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
++test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
++test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
++test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
++Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
++test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
++test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++
++----------------------------------------------------------------------
++Ran 19 tests in 1.623s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_p8_round4_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_p8_round4_AFTER.txt
+new file mode 100644
+index 0000000..d868722
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_p8_round4_AFTER.txt
+@@ -0,0 +1,17 @@
++# test_p8_round4 vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... ok
++test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
++test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
++Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... ok
++test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
++test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ok
++test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
++
++----------------------------------------------------------------------
++Ran 10 tests in 8.688s
++
++OK
+diff --git a/review/p8_sdk_transport/stage2b_evidence/test_p8_stage2b_AFTER.txt b/review/p8_sdk_transport/stage2b_evidence/test_p8_stage2b_AFTER.txt
+new file mode 100644
+index 0000000..1d3a4c6
+--- /dev/null
++++ b/review/p8_sdk_transport/stage2b_evidence/test_p8_stage2b_AFTER.txt
+@@ -0,0 +1,24 @@
++# test_p8_stage2b vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
++test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
++If the worker cannot record that its request finished, the id must stay 'in flight'. ... ok
++test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
++Codex reviewer_checks.py case 1, as assertions. ... ok
++test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=7>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=9>
++  method()
++ResourceWarning: Enable tracemalloc to get the object allocation traceback
++ok
++test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... ok
++test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget) ... ok
++test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
++Codex reviewer_checks.py case 2, as an assertion. ... ok
++test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
++Another connection holds the write lock after the POST; the post-POST record must not ... ok
++test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault) ... ok
++
++----------------------------------------------------------------------
++Ran 8 tests in 5.416s
++
++OK
+-- 
+2.54.0 (Apple Git-157)
+
