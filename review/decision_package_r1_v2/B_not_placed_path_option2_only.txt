@@ -1,0 +1,9 @@
+test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.087s
+
+OK
