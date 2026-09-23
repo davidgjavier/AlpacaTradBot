@@ -1,0 +1,51 @@
+test_hidden_accepted_order_cannot_be_replaced_by_assertion (codex_option1_regressions_verbatim.Option1) ... FAIL
+test_late_visible_fill_resolves_without_replacement (codex_option1_regressions_verbatim.Option1) ... FAIL
+test_manual_flat_is_not_order_reconciliation (codex_option1_regressions_verbatim.Option1) ... ok
+test_never_sent_assertion_leaves_identity_and_pending (codex_option1_regressions_verbatim.Option1) ... FAIL
+test_old_authorized_attempt_cannot_bypass_missing_identity (codex_option1_regressions_verbatim.Option1) ... FAIL
+test_restart_keeps_rejected_assertion_pending (codex_option1_regressions_verbatim.Option1) ... FAIL
+
+======================================================================
+FAIL: test_hidden_accepted_order_cannot_be_replaced_by_assertion (codex_option1_regressions_verbatim.Option1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/candidate_option1_v2/codex_regressions/test_option1_candidate.py", line 10, in test_hidden_accepted_order_cannot_be_replaced_by_assertion
+    self.assertEqual(len(market_submissions(b)),1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_late_visible_fill_resolves_without_replacement (codex_option1_regressions_verbatim.Option1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/candidate_option1_v2/codex_regressions/test_option1_candidate.py", line 41, in test_late_visible_fill_resolves_without_replacement
+    self.assertFalse(pending(ns));self.assertEqual(len(market_submissions(ns['_broker'])),1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_never_sent_assertion_leaves_identity_and_pending (codex_option1_regressions_verbatim.Option1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/candidate_option1_v2/codex_regressions/test_option1_candidate.py", line 16, in test_never_sent_assertion_leaves_identity_and_pending
+    self.assertTrue(pending(ns));self.assertEqual(pending(ns)['client_order_id'],cid)
+AssertionError: None is not true
+
+======================================================================
+FAIL: test_old_authorized_attempt_cannot_bypass_missing_identity (codex_option1_regressions_verbatim.Option1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/candidate_option1_v2/codex_regressions/test_option1_candidate.py", line 24, in test_old_authorized_attempt_cannot_bypass_missing_identity
+    self.assertEqual(len(market_submissions(ns['_broker'])),count)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_restart_keeps_rejected_assertion_pending (codex_option1_regressions_verbatim.Option1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/candidate_option1_v2/codex_regressions/test_option1_candidate.py", line 31, in test_restart_keeps_rejected_assertion_pending
+    self.assertEqual(len(market_submissions(n2['_broker'])),1)
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.124s
+
+FAILED (failures=5)

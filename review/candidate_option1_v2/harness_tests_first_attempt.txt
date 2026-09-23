@@ -1,0 +1,61 @@
+test_v1_rule_resells_after_a_lost_cleanup_response (test_paper_harness.D1_PlanV1CleanupRuleDefect) ... ok
+test_v1_rule_sells_while_a_cancellation_is_unknown (test_paper_harness.D1_PlanV1CleanupRuleDefect) ... ok
+test_no_default_transport (test_paper_harness.N0_Hygiene) ... ok
+test_source_has_no_bot_credential_or_network_imports (test_paper_harness.N0_Hygiene) ... /Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness.py:85: ResourceWarning: unclosed file <_io.TextIOWrapper name='/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/paper_harness.py' mode='r' encoding='UTF-8'>
+  src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_harness.py")).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_404_after_lost_response_is_not_resolution (test_paper_harness.N1_UnknownOrders) ... ok
+test_accepted_order_with_lost_response_blocks_everything_including_cleanup (test_paper_harness.N1_UnknownOrders) ... FAIL
+test_cleanup_never_submits_a_second_sell_while_the_first_is_unknown (test_paper_harness.N1_UnknownOrders) ... FAIL
+test_unknown_cancellation_blocks_cleanup_sell (test_paper_harness.N1_UnknownOrders) ... ok
+test_adverse_fill_of_far_limit_is_a_stop_and_cleanup_stays_within_reserve (test_paper_harness.N2_LateFillsAndReads) ... ok
+test_failed_position_read_blocks_cleanup_sell (test_paper_harness.N2_LateFillsAndReads) ... ok
+test_late_fill_after_terminal_is_an_anomaly_and_stops (test_paper_harness.N2_LateFillsAndReads) ... ok
+test_duplicate_callbacks_do_not_double_count (test_paper_harness.N3_DuplicatesAndRestart) ... ok
+test_restart_rebuilds_state_keeps_budget_and_refuses_new_orders_while_unresolved (test_paper_harness.N3_DuplicatesAndRestart) ... ok
+test_aggregate_buy_cap (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_exhausted_cleanup_budget_reports_residual_exposure (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_graceful_ctrl_c_runs_cleanup_under_the_invariant (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_oversized_quantity_and_notional_are_refused_locally_with_zero_submissions (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_rejected_and_duplicate_submissions_count_against_budget_and_reserve_is_kept (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_second_ctrl_c_during_cleanup_is_forced_and_journal_survives (test_paper_harness.N4_BudgetLimitsInterrupt) ... ok
+test_sell_capped_by_confirmed_unreserved_inventory (test_paper_harness.N4_BudgetLimitsInterrupt) ... ERROR
+
+======================================================================
+ERROR: test_sell_capped_by_confirmed_unreserved_inventory (test_paper_harness.N4_BudgetLimitsInterrupt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness.py", line 238, in test_sell_capped_by_confirmed_unreserved_inventory
+    h.sell(0.00015, PX, otype="limit", limit=200_000.0)      # rests; reserves 0.00015
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/paper_harness.py", line 227, in sell
+    return self._submit("sell", qty, otype, price_ref, "test", limit=limit)
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/paper_harness.py", line 160, in _submit
+    self._refuse(f"order notional {notional:.2f} > {self.max_order_notional}")
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/paper_harness.py", line 199, in _refuse
+    raise LocalRefusal(why)
+paper_harness.LocalRefusal: order notional 30.00 > 25.0
+
+======================================================================
+FAIL: test_accepted_order_with_lost_response_blocks_everything_including_cleanup (test_paper_harness.N1_UnknownOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness.py", line 102, in test_accepted_order_with_lost_response_blocks_everything_including_cleanup
+    self.assertEqual(len(f.submits), 1, "another order was submitted while one was unknown")
+AssertionError: 2 != 1 : another order was submitted while one was unknown
+
+======================================================================
+FAIL: test_cleanup_never_submits_a_second_sell_while_the_first_is_unknown (test_paper_harness.N1_UnknownOrders)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/review/paper_contract/harness_v1/test_paper_harness.py", line 140, in test_cleanup_never_submits_a_second_sell_while_the_first_is_unknown
+    self.assertEqual(rep1["status"], "UNRESOLVED")
+AssertionError: 'CLEAN' != 'UNRESOLVED'
+- CLEAN
++ UNRESOLVED
+
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.024s
+
+FAILED (failures=2, errors=1)

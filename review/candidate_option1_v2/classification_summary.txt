@@ -1,0 +1,8 @@
+total 97
+SAFETY_PASS                              91
+CHANGED_EXPECTATION_FAILS_AS_PREDICTED   4
+RISK_DEMO_NO_LONGER_REPRODUCES           1
+KNOWN_CONFLICT_FAILS_AS_PREDICTED        1
+SKIPPED                                  0
+UNEXPECTED                               []
+codex regressions: {'test_hidden_accepted_order_cannot_be_replaced_by_assertion': 'pass', 'test_late_visible_fill_resolves_without_replacement': 'pass', 'test_manual_flat_is_not_order_reconciliation': 'pass', 'test_never_sent_assertion_leaves_identity_and_pending': 'pass', 'test_old_authorized_attempt_cannot_bypass_missing_identity': 'pass', 'test_restart_keeps_rejected_assertion_pending': 'pass'}

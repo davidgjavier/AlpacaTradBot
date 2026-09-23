@@ -1,0 +1,163 @@
+test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_partial_flatten_keeps_liquidation_pending_until_flat (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_other_open_sells_are_cancelled_and_confirmed_before_reselling (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_working_sell_is_reconciled_not_repeated (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_pending_liquidation_survives_restart (test_stage5_liquidation.C_RestartRecovery) ... ok
+test_restart_after_submit_before_id_persisted_does_not_double_sell (test_stage5_liquidation.C_RestartRecovery)
+Crash between submitting the liquidation sell and recording its id: the order is found by its ... ok
+test_eventual_confirmed_flat_after_failures_completes (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_stale_read_does_not_size_a_protective_stop_after_partial (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_success_then_failed_read_is_not_a_quantity (test_stage5_liquidation.D_IntermittentPositionReads)
+verify_sell_filled: a good read (0.3) followed only by failures must return UNKNOWN (None). ... ok
+test_unreadable_position_while_pending_takes_no_action_and_no_entry (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_liquidation_continues_after_day_rollover_and_blocks_entries (test_stage5_liquidation.E_DayRollover) ... ok
+test_failed_post_cancel_read_submits_nothing_and_stays_pending (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... ok
+test_fill_during_cancellation_resizes_the_sell (test_stage5b_reconcile_first.A_ReReadAfterCancellation) ... ok
+test_zero_position_cancels_and_confirms_leftover_sell_then_completes (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_other_open_sell_and_unknown_order_list_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_uncancellable_working_sell_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_zero_position_with_unknown_own_order_stays_pending (test_stage5b_reconcile_first.B_CompletionRequiresReconciledOrders) ... ok
+test_crash_between_completion_writes_keeps_latch_and_converges (test_stage5c_latch_and_crash.C_CrashWindows) ... ok
+test_intent_persisted_but_never_sent_is_resubmitted_once (test_stage5c_latch_and_crash.C_CrashWindows) ... FAIL
+test_manually_installed_new_day_state_allows_entry (test_stage5c_latch_and_crash.L_SameDayLatch)
+LABEL (accurate): installs the state reset_day_if_needed() WOULD return on a new UTC day (new ... ok
+test_pending_liquidation_still_runs_on_latched_day (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_recovered_pl_does_not_reopen_entries_same_day (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_threshold_unchanged (test_stage5c_latch_and_crash.L_SameDayLatch) ... ok
+test_eventual_visibility_completes_with_a_single_sell (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_invisible_accepted_sell_is_not_followed_by_a_second_sell (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_invisible_order_filled_position_flat_is_not_completed_until_reconciled (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_restart_while_invisible_does_not_resubmit (test_stage5d_visibility.V_DelayedVisibility) ... ok
+test_escalates_after_bound_without_resubmitting (test_stage5d_visibility.W_DraftEscalation) ... ok
+test_completeness_evidence_required (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_position_quantities_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_invalid_timestamps_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_fills_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_malformed_orders_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_missing_or_malformed_lists_block (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_valid_snapshot_ok (test_draft_d10_hardening.A_SnapshotValidation) ... ok
+test_freshness (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_incomplete_live_read_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_invalid_live_quantities_refused_even_if_equal (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_matching_fresh_live_state_passes (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_same_order_id_with_changed_details_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_snapshot_identity_must_match_expected_too (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_wrong_account_environment_symbol_with_identical_qty_and_ids_refused (test_draft_d10_hardening.B_ApplyTimeGate) ... ok
+test_codex_counterexample_future_coverage_and_future_fill_blocked (test_draft_d10_hardening.C_Chronology) ... ok
+test_coverage_ending_after_capture_time_blocked (test_draft_d10_hardening.C_Chronology) ... ok
+test_empty_coverage_window_blocked (test_draft_d10_hardening.C_Chronology) ... ok
+test_fill_later_than_taken_at_blocked (test_draft_d10_hardening.C_Chronology) ... ok
+test_inverted_coverage_blocked_explicitly (test_draft_d10_hardening.C_Chronology) ... ok
+test_valid_boundary_controls (test_draft_d10_hardening.C_Chronology) ... ok
+test_attempt_without_any_identity_escalates_immediately_without_selling (test_draft_r1v2.G1_MissingMetadata) ... ok
+test_pending_record_without_inflight_is_reconstructed_conservatively (test_draft_r1v2.G1_MissingMetadata) ... ok
+test_not_found_by_order_id_escalates_at_bound (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_unknown_lookup_escalates_at_bound_and_never_resubmits (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_visible_working_order_never_escalates (test_draft_r1v2.G2_OutcomeMatrix) ... ok
+test_broker_visibility_after_escalation_resolves_with_history (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_restart_after_escalation_keeps_it_without_resubmit_or_entry (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_three_checks_exactly_at_window_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_three_checks_just_before_window_do_not_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_two_checks_at_window_do_not_escalate (test_draft_r1v2.G3_BoundariesAndRestart) ... ok
+test_found_resolution_reconciles_the_named_order (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_invalid_resolution_is_rejected_and_nothing_is_sold (test_draft_r1v2.G4_OperatorRecovery) ... ok
+test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt (test_draft_r1v2.G4_OperatorRecovery) ... FAIL
+test_clean_snapshot_is_ok_for_review_and_detects_condition (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_each_blocking_reason (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_flags_unrecognized_orders_reentry_and_unseen_attempt (test_draft_r1v2.G5_D10Snapshot) ... ok
+test_live_gate (test_draft_r1v2.G5_D10Snapshot)
+MIGRATED to live_gate(snapshot, live, expected): identity + freshness + full order details. ... ok
+test_boolean_or_mismatched_attempt_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_requires_matching_client_id_symbol_and_side (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_broker_now_shows_the_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_not_placed_is_rejected_if_the_position_decreased (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_unbound_resolution_is_rejected (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_valid_found_reconciles_the_real_order (test_draft_r1v2_resolution.C_BindingAndVerification) ... ok
+test_found_pointing_at_unrelated_terminal_order_neither_resells_nor_completes (test_draft_r1v2_resolution.D_EndToEndCounterexample) ... ok
+test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... FAIL
+test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... FAIL
+test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection) ... FAIL
+test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes (test_draft_r1v2_resolution.R_DocumentedRisk) ... FAIL
+test_bound_not_placed_assertion_is_rejected_no_second_sell (test_candidate_opt1.A_HiddenAcceptedOriginal)
+Inverse of the frozen draft's documented risk (R_DocumentedRisk). ... ok
+test_no_second_sell_no_false_completion_ever (test_candidate_opt1.A_HiddenAcceptedOriginal) ... ok
+test_remains_pending_blocks_entries_and_exposes_status (test_candidate_opt1.B_IntentSavedNeverSent) ... ok
+test_flat_with_hidden_attempt_is_not_reconciled (test_candidate_opt1.C_ZeroPositionUnknownOrder) ... ok
+test_flat_with_never_sent_attempt_is_not_reconciled (test_candidate_opt1.C_ZeroPositionUnknownOrder) ... ok
+test_canceled_unfilled_resells_once_on_positive_terminal_evidence (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_filled (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_partially_filled_still_working (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_partially_filled_then_canceled_sells_only_the_remainder_once (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_rejected_resells_once_on_positive_terminal_evidence (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_working (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_every_unresolved_state (test_candidate_opt1.E_RestartAndDayRollover) ... ok
+test_position_open_orders_and_lookup_failures_take_no_action_then_recover (test_candidate_opt1.F_ReadFailuresDuringRecovery) ... ok
+test_manual_flatten_then_original_reported_rejected_resolves_without_a_new_sell (test_candidate_opt1.G_LateOriginalFillAfterInvestigation) ... ok
+test_operator_assertion_rejected_then_late_fill_completes_with_one_sell (test_candidate_opt1.G_LateOriginalFillAfterInvestigation) ... ok
+test_hidden_accepted_order_cannot_be_replaced_by_assertion (codex_option1_regressions_verbatim.Option1) ... ok
+test_late_visible_fill_resolves_without_replacement (codex_option1_regressions_verbatim.Option1) ... ok
+test_manual_flat_is_not_order_reconciliation (codex_option1_regressions_verbatim.Option1) ... ok
+test_never_sent_assertion_leaves_identity_and_pending (codex_option1_regressions_verbatim.Option1) ... ok
+test_old_authorized_attempt_cannot_bypass_missing_identity (codex_option1_regressions_verbatim.Option1) ... ok
+test_restart_keeps_rejected_assertion_pending (codex_option1_regressions_verbatim.Option1) ... ok
+
+======================================================================
+FAIL: test_intent_persisted_but_never_sent_is_resubmitted_once (test_stage5c_latch_and_crash.C_CrashWindows)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5c_latch_and_crash.py", line 125, in test_intent_persisted_but_never_sent_is_resubmitted_once
+    self.assertAlmostEqual(b.qty, 0.0)
+AssertionError: 0.5 != 0.0 within 7 places (0.5 difference)
+
+======================================================================
+FAIL: test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt (test_draft_r1v2.G4_OperatorRecovery)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2.py", line 183, in test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt
+    self.assertEqual(len([o for o in b.orders.values() if o.kind == "market"]), 1, "not exactly one new attempt")
+AssertionError: 0 != 1 : not exactly one new attempt
+
+======================================================================
+FAIL: test_authorization_is_exactly_once_and_cannot_be_reused (test_draft_r1v2_resolution.E_ReplayCrashRejection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 209, in test_authorization_is_exactly_once_and_cannot_be_reused
+    self.assertEqual([h["outcome"] for h in hist][:1], ["applied"])
+AssertionError: Lists differ: ['rejected: not_placed is not supported (Op[55 chars]pt)'] != ['applied']
+
+First differing element 0:
+'rejected: not_placed is not supported (Op[54 chars]mpt)'
+'applied'
+
++ ['applied']
+- ['rejected: not_placed is not supported (Option 1: only positive broker '
+-  'evidence resolves an attempt)']
+
+======================================================================
+FAIL: test_crash_after_applying_resolution_yields_exactly_one_new_attempt (test_draft_r1v2_resolution.E_ReplayCrashRejection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 229, in test_crash_after_applying_resolution_yields_exactly_one_new_attempt
+    self.assertTrue(getattr(db, "_crashed", False), "the crash was not exercised (test would be vacuous)")
+AssertionError: False is not true : the crash was not exercised (test would be vacuous)
+
+======================================================================
+FAIL: test_rejected_resolution_stays_rejected_and_history_is_preserved (test_draft_r1v2_resolution.E_ReplayCrashRejection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 251, in test_rejected_resolution_stays_rejected_and_history_is_preserved
+    self.assertEqual(len(sells_at_broker(ns["_broker"])), 1)
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes (test_draft_r1v2_resolution.R_DocumentedRisk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_draft_r1v2_resolution.py", line 102, in test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes
+    self.assertEqual(len(market_submissions(b)), 2, "documented risk changed: submissions != 2")
+AssertionError: 1 != 2 : documented risk changed: submissions != 2
+
+----------------------------------------------------------------------
+Ran 97 tests in 1.782s
+
+FAILED (failures=6)

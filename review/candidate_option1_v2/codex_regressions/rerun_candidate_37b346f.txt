@@ -1,0 +1,11 @@
+test_hidden_accepted_order_cannot_be_replaced_by_assertion (codex_option1_regressions_verbatim.Option1) ... ok
+test_late_visible_fill_resolves_without_replacement (codex_option1_regressions_verbatim.Option1) ... ok
+test_manual_flat_is_not_order_reconciliation (codex_option1_regressions_verbatim.Option1) ... ok
+test_never_sent_assertion_leaves_identity_and_pending (codex_option1_regressions_verbatim.Option1) ... ok
+test_old_authorized_attempt_cannot_bypass_missing_identity (codex_option1_regressions_verbatim.Option1) ... ok
+test_restart_keeps_rejected_assertion_pending (codex_option1_regressions_verbatim.Option1) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.120s
+
+OK
