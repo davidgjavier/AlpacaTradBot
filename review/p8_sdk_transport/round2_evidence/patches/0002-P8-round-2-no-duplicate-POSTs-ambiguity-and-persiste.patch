@@ -1,0 +1,932 @@
+From b42fa0903477f968fad82e9d16cbb744cc56cf52 Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 08:32:00 -0700
+Subject: [PATCH 2/2] P8 round 2: no duplicate POSTs; ambiguity and persistence
+ failure explicit
+
+broker_io.py (proposal, not wired into any bot):
+- Ownership: only the caller whose INSERT creates the intent may POST; losers get
+  the existing state with 0 POSTs (no raw IntegrityError).
+- Compare-and-set transitions; terminal ACCEPTED/REJECTED never overwritten.
+  REJECTED only from SUBMITTING with submit_attempts == 1.
+- Absence is never inferred: NOT_FOUND_AFTER_WINDOW retired; list is positive
+  evidence only; resubmit() disabled (read-only reconcile, never POSTs).
+- SubmitResult.order_id on every path; persisted/persistence_error fields;
+  NOT_SUBMITTED and CONFLICT states. No exception escapes after a POST,
+  including store read failures (found in self-review).
+- sqlite connections now closed (contextlib.closing).
+
+Tests: round-2 suite 15 (14 fail on eddcdda, 15 pass); existing 30 pass with 3
+expectations changed (documented in ROUND2_REVIEW.md, safety assertions kept).
+Timeout/deadline corrections and paper-plan revision remain OPEN.
+---
+ review/p8_sdk_transport/ROUND2_REVIEW.md      | 108 +++++++
+ .../proposed/PROPOSED_CONFIGURATION.md        |  13 +-
+ review/p8_sdk_transport/proposed/broker_io.py | 298 ++++++++++++------
+ .../proposed/test_broker_io.py                |  26 +-
+ .../proposed/test_p8_round2.py                |  42 +++
+ .../round2_evidence/existing30_AFTER.txt      |  38 +++
+ .../round2_evidence/round2_full15_AFTER.txt   |  25 ++
+ .../round2_full15_BEFORE_eddcdda.txt          | 151 +++++++++
+ 8 files changed, 597 insertions(+), 104 deletions(-)
+ create mode 100644 review/p8_sdk_transport/ROUND2_REVIEW.md
+ create mode 100644 review/p8_sdk_transport/round2_evidence/existing30_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/round2_evidence/round2_full15_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/round2_evidence/round2_full15_BEFORE_eddcdda.txt
+
+diff --git a/review/p8_sdk_transport/ROUND2_REVIEW.md b/review/p8_sdk_transport/ROUND2_REVIEW.md
+new file mode 100644
+index 0000000..52aa702
+--- /dev/null
++++ b/review/p8_sdk_transport/ROUND2_REVIEW.md
+@@ -0,0 +1,108 @@
++# P8 wrapper — Round 2: ambiguous submissions and duplicate-order prevention
++
++- **Branch:** `review/p8-sdk-wrapper`, worktree `/Users/davidj/AlpacaTradeBot_p8_worktree`
++- **Scope:** `review/p8_sdk_transport/proposed/broker_io.py` and its tests. **Offline only.**
++- **Isolation:** nothing wired into any bot, nothing deployed, no broker contact. Codex's Target-1
++  accounting fix is untouched (it lives on `review/p0-1-breakeven-guard`).
++
++| Commit | Content |
++|---|---|
++| `eddcdda` | Baseline: the wrapper as saved 2026-09-23 07:24 (`broker_io.py` sha256 `fd58a0a3…`, tests `9460be21…`), byte-identical |
++| `e0bbf5f` | Round-2 regression tests only (12), reproducing the findings; wrapper unchanged |
++| *(this commit)* | Fix, plus 3 self-review tests, 3 changed expectations in the existing suite, evidence, and this document |
++
++## Findings — verdicts within the tested scope
++
++"Fixed" means: reproduced on the baseline with the listed fixtures, and passing after the fix with
++the same fixtures. It does **not** mean verified against Alpaca.
++
++| # | Finding | Reproduced on baseline | Verdict |
++|---|---|---|---|
++| 1 | `resubmit()` had no atomic ownership check | Yes. Two concurrent callers gave **3 POSTs** (2 extra), and the duplicate 422 marked the intent REJECTED. A concurrent first `submit()` raised a raw UNIQUE-constraint error. A stale reconcile **overwrote ACCEPTED** | **Fixed (offline).** Only the caller whose INSERT created the intent may POST; a losing caller gets the existing state with 0 POSTs. All state changes are compare-and-set, so terminal states can't be overwritten. `resubmit()` never POSTs |
++| 2 | A later 400/422 could mark an earlier, possibly accepted order REJECTED and stop reconciliation | Yes. A duplicate-id 422 (HYPOTHETICAL broker behavior) after a hidden accepted order gave REJECTED and removed the intent from the queue | **Fixed (offline).** REJECTED is allowed only from SUBMITTING with `submit_attempts == 1` (the single POST). Any other 4xx is ambiguous. The intent stays queued and resolved to the original order id once visible |
++| 3 | Negative lookup plus one list page after 30 s does not prove absence | Yes. Delayed visibility (120 s), a truncated 500-order page, and even "full" negative evidence each authorized a **second POST** | **Fixed (offline).** Negative evidence never resolves an intent. The list query is used only for *positive* evidence. `NOT_FOUND_AFTER_WINDOW` is retired (legacy rows are read as UNRESOLVED). Automatic resubmission is **disabled** (`RESUBMISSION_ENABLED = False`) |
++| 4 | Recovered ACCEPTED results omitted the broker order id | Yes. `order_id` was missing on the reconcile, already-resolved, existing-intent and restart paths | **Fixed (offline).** `SubmitResult.order_id` is populated on every path, from the broker response or the stored row |
++| 5 | A persistence failure after submission hid an accepted order or an ambiguous outcome behind an exception | Yes: 4 cases (accepted then record fails; ambiguous then record fails; found in reconcile then record fails; intent write fails pre-POST) | **Fixed (offline).** After a POST has been attempted, **no exception escapes**. Results carry `persisted` and `persistence_error`; known identity is always returned. A pre-POST failure returns `NOT_SUBMITTED`. Self-review found **unwrapped store reads** that could still raise after a POST (3 new tests, 3/3 failing on the first fix). Now wrapped |
++
++## Test results (same fixtures before and after)
++
++| Suite | Baseline `eddcdda` | After (this commit) |
++|---|---|---|
++| `test_p8_round2.py` (15) | **14 fail**, 1 pass* | **15 pass** |
++| `test_broker_io.py` (30, existing) | 30 pass | **30 pass**, with 3 expectations changed (below) |
++
++\* The baseline pass is `test_rejected_post_then_store_reads_fail_still_no_exception`. It guards a store
++read that the round-2 fix itself introduced; the baseline 403 branch did not read the store.
++
++**Fixture corrections made before the fix.** Two round-2 fixtures initially passed on the baseline for
++the wrong reason:
++- The truncated page used non-UUID ids, which the SDK rejected, so the list read errored.
++- The stale-reconcile race stayed inside the window, where the baseline skips identical writes.
++
++Both were corrected and re-run on the baseline **before** any wrapper change (see
++`round2_evidence/round2_BEFORE_eddcdda.txt`).
++
++**Changed expectations in the existing 30** (safety assertions kept):
++
++| Test | Old expectation | New expectation | Reason |
++|---|---|---|---|
++| `C.test_intent_write_failure_means_no_post` | raises `PersistenceError` | returns `NOT_SUBMITTED`, `persisted=False` | Finding 5. **0 POSTs** still asserted |
++| `C.test_record_failure_after_accepted_post_is_recovered` | raises `PersistenceError` | returns `ACCEPTED` with `order_id`, `persisted=False` | Finding 5. Row still SUBMITTING; recovery still gives ACCEPTED with 1 POST |
++| `D.test_crash_before_post_restart_then_window_list_then_single_resubmit` | resubmit after 30 s POSTs once | **no POST**; stays UNRESOLVED and queued; `submit_attempts` stays 1 | Finding 3 and the resubmission-disabled policy |
++
++## Caller-integration requirements (for any future wiring; none is wired today)
++
++Callers must read both `SubmitResult.state` **and** `SubmitResult.persisted`.
++
++| `state` | Meaning | Required caller behavior |
++|---|---|---|
++| `ACCEPTED` | Broker has this order | Use `order_id`. If `persisted=False`, keep `order_id` in memory and in position state; the intent row stays queued and `recover_pending()` will record it |
++| `REJECTED` | The single POST was definitively refused (400/401/403/422 on attempt 1) | Not placed. The caller may decide a new action, **with a new client id** |
++| `UNRESOLVED` | Outcome unknown. **Not "not placed"** | Treat as possible exposure: persist the client id in position state; block new entries for the symbol; don't size or place replacement or opposing orders on the assumption it doesn't exist; call `recover_pending()` or `reconcile()` every cycle; alert a human if unresolved beyond a bound. **Never** submit the same logical action under a new client id |
++| `NOT_SUBMITTED` | Nothing was sent; intent not durable (or store unreadable) | Safe to retry later; treat as a storage fault; alert |
++| `CONFLICT` | Broker shows an order that contradicts a stored terminal state | Stop automated action on the symbol; human review |
++
++- **`persisted=False`** on any state means the store may be behind reality. The row remains in the
++  recovery queue. Don't treat the lack of a saved record as the lack of an order.
++- `recover_pending()` must run at startup and every cycle. If the queue itself is unreadable, it
++  returns a single `UNRESOLVED` result with client id `"*"`; treat that as "all exposure unknown".
++- `resubmit()` is **read-only** in this round. An intent that truly never reached the broker now stays
++  UNRESOLVED indefinitely. Clearing it requires an **explicit human decision**. That workflow isn't
++  implemented; see the next task.
++
++## Remaining risks (open)
++
++- **Timeouts and deadlines (explicitly deferred):**
++  - the read timeout is an inactivity timeout, not a wall-clock bound;
++  - DNS and TLS aren't covered or tested;
++  - `read()` can overrun its deadline by one attempt;
++  - the Stage A ≈ 61 s figure inherits all of these.
++
++  See `../../claude_supplement_2026-09-23/P8_PROPOSAL_KNOWN_LIMITATIONS.md` §3 (in the main checkout).
++- **Paper plan (explicitly deferred):** the P5 + P6 inventory shortfall (0.0008 sold vs about 0.000798
++  held) and the other sizing items in `PAPER_TEST_PLAN_v2.md` are unchanged.
++- **Identity verification:** a lookup or list hit is adopted by `client_order_id` alone. Symbol, side,
++  qty and prices aren't compared with the stored payload. Multiple orders with one id (if Alpaca
++  accepts duplicates) aren't detected; the first hit is taken. List pagination isn't handled (it's now
++  harmless for safety because absence is never inferred, but a found-by-list result can still be
++  missed).
++- **Liveness cost of the safer policy:** an intent that never reached the broker blocks entries
++  forever without a human decision. Correct under uncertainty, but operationally heavy.
++- **Concurrency coverage:** threads and separate store instances on one SQLite file were tested, plus
++  the earlier two-process restart. Truly concurrent processes on different hosts were not tested.
++  SQLite `BEGIN IMMEDIATE` is relied on.
++- **Broker behavior still unobserved:** duplicate client-id handling, 404/40410000 for an unknown
++  client id, visibility delay (paper test P3).
++- **Accounting:** linking an intent to position state and a trade row (exactly-once) is Codex's work
++  item.
++
++## Next bounded task (proposal)
++
++**Round 3: identity verification and human-resolution workflow. Offline, same branch.**
++1. On any lookup or list hit, compare symbol, side, type, qty and limit/stop price with the stored
++   payload. A mismatch returns `CONFLICT`. More than one match returns `CONFLICT`.
++2. Add `abandon(cid, operator_note)`: an explicit, audited human action that moves an UNRESOLVED
++   intent to `ABANDONED` only after a fresh positive-evidence check fails. It still never POSTs.
++3. Paginate the list query for positive evidence, with bounded pages.
++
++After that: timeout/deadline hardening (the deferred item), then the paper-plan revision.
+diff --git a/review/p8_sdk_transport/proposed/PROPOSED_CONFIGURATION.md b/review/p8_sdk_transport/proposed/PROPOSED_CONFIGURATION.md
+index 739c3b1..bb00716 100644
+--- a/review/p8_sdk_transport/proposed/PROPOSED_CONFIGURATION.md
++++ b/review/p8_sdk_transport/proposed/PROPOSED_CONFIGURATION.md
+@@ -1,5 +1,7 @@
+ # Proposed SDK configuration for the crypto bot (P8 follow-up) — PROPOSAL ONLY
+ 
++> **Round 2 update (branch `review/p8-sdk-wrapper`):** submission and reconciliation semantics changed; see `../ROUND2_REVIEW.md`. Timeout/deadline and paper-plan items remain OPEN.
++
+ - **Status:** nothing here is applied to any trading file, running service, or installed package.
+ - **Code:** `broker_io.py` (wrapper) and `test_broker_io.py` (30 offline tests, all passing; results in
+   `test_results.txt`).
+@@ -51,9 +53,10 @@ attributes at startup and **fails closed** on any mismatch. The SDK version shou
+   - call `reconcile()` on following cycles.
+ 
+   **It must not call `submit()` again with a new id.**
+-- `NOT_FOUND_AFTER_WINDOW` → absence is *inferred* (lookup and list both negative after 30 s). Only then
+-  may the caller call `resubmit()`, which reconciles again first and re-POSTs with the **same** id and
+-  payload.
++- **SUPERSEDED (round 2):** `NOT_FOUND_AFTER_WINDOW` is retired and `resubmit()` never POSTs. Negative
++  evidence, elapsed time and incomplete listings do not prove absence. See `../ROUND2_REVIEW.md` for the
++  current states (`ACCEPTED`, `REJECTED`, `UNRESOLVED`, `NOT_SUBMITTED`, `CONFLICT`), the `persisted`
++  flag, and caller requirements.
+ - **On startup:** `recover_pending()` reconciles every intent left in `SUBMITTING` or `UNRESOLVED`. It
+   never re-POSTs.
+ 
+@@ -68,7 +71,7 @@ is the Codex work item. The client id is the natural key for that link.
+ | A. Configuration | Retries disabled on the gateway client; timeout tuple reaches the transport; fails closed on version or attribute mismatch; unconfigured client refused | pass |
+ | B. Submissions | 504 and 429 give **1 POST**, then `UNRESOLVED`. Accepted-then-504, read-timeout or reset gives `ACCEPTED` via the same id, 1 POST, 1 order. 403 gives `REJECTED`. Non-JSON 504 doesn't crash. Missing client id refused before any POST. A repeated `submit()` never re-POSTs. Same id with a different payload is refused | pass |
+ | C. Persistence | Intent-write failure means **0 POSTs**. A record failure after an accepted POST leaves the row `SUBMITTING`; `recover_pending()` gives `ACCEPTED` with 1 POST total | pass |
+-| D. Reconcile and resubmit | Crash before the POST: `UNRESOLVED` inside the window, no POST. After the window, lookup plus list confirm absence, then **exactly one** resubmit with the same id. Crash after an accepted POST: `ACCEPTED`, 0 POSTs. Delayed visibility: found by the list. Lookup or list unavailable: stays `UNRESOLVED`, never "absent" | pass |
++| D. Reconcile and resubmit | Crash before the POST: `UNRESOLVED` inside the window, no POST. ~~After the window, lookup plus list confirm absence, then exactly one resubmit~~ **superseded in round 2: no POST; stays UNRESOLVED and queued.** Crash after an accepted POST: `ACCEPTED`, 0 POSTs. Delayed visibility: found by the list. Lookup or list unavailable: stays `UNRESOLVED`, never "absent" | pass |
+ | E. Reads | Bounded by deadline and attempt count. Structured 404/40410000 is `NOT_FOUND` on the first attempt. Free-text "not found" is `UNAVAILABLE`. Transient-then-OK recovers. 401 is `ERROR` (not retried). Cancel: 204 means `CANCEL_REQUEST_ACCEPTED` (order still `pending_cancel`); 422 means `NOT_CANCELABLE` via the structured status | pass |
+ | F. Real socket | A silent loopback server raises `ReadTimeout` at **1.50 s**. With the stock SDK the same setup blocked for the full 8 s | pass |
+ | G. Fresh process | Process A dies after the broker accepted the order, before recording. Process B recovers `ACCEPTED` with **0 POSTs and 1 broker order** | pass |
+@@ -80,7 +83,7 @@ one of them, the blind retry silently created a second order that the SDK report
+ ## Assumptions still requiring paper observation (P3/P4/P7)
+ 
+ - Alpaca's response to a repeated `client_order_id`. The gateway never depends on it, because it never
+-  re-POSTs an id that might exist, except after `NOT_FOUND_AFTER_WINDOW`.
++  re-POSTs an id that might exist, and in round 2 never re-POSTs any id.
+ - The 30 s visibility window. It's a placeholder, not a measured value.
+ - That 404 + 40410000 is returned for an unknown client id.
+ - Whether a 429 on POST ever coincides with acceptance. The gateway treats it as ambiguous either way.
+diff --git a/review/p8_sdk_transport/proposed/broker_io.py b/review/p8_sdk_transport/proposed/broker_io.py
+index 49a1f50..2455d83 100644
+--- a/review/p8_sdk_transport/proposed/broker_io.py
++++ b/review/p8_sdk_transport/proposed/broker_io.py
+@@ -9,13 +9,18 @@ So this module:
+      version or the private attributes it relies on differ.
+   2. read(): bounded, deadline-limited retries for READ-ONLY calls, returning OK / NOT_FOUND /
+      UNAVAILABLE / ERROR. NOT_FOUND only from a structured HTTP 404 + code 40410000.
+-  3. OrderGateway.submit(): exactly one POST per client_order_id attempt. Durable intent row
+-     (client id + payload) is committed BEFORE the POST; if that write fails nothing is sent.
+-     Ambiguous outcomes (5xx, 429, timeouts, connection errors, non-JSON) become UNRESOLVED
+-     and are reconciled by the SAME client id. No automatic resubmission.
+-  4. OrderGateway.reconcile(): lookup by client id; after a visibility window, an absence
+-     confirmed by BOTH the lookup and an order-list query becomes NOT_FOUND_AFTER_WINDOW.
+-     Only then may resubmit() POST again, with the same client id and payload.
++  3. OrderGateway.submit(): at most ONE POST per client_order_id, ever. The durable intent row
++     (client id + payload) is committed BEFORE the POST; if that write fails nothing is sent
++     (NOT_SUBMITTED). Only the caller that created the row may POST (insert = ownership).
++     Ambiguous outcomes (5xx, 429, timeouts, connection errors, non-JSON) become UNRESOLVED.
++     After a POST has been attempted, results are RETURNED, never raised, including when the
++     result cannot be saved (persisted=False, row stays in the recovery queue).
++  4. OrderGateway.reconcile(): only POSITIVE broker evidence (lookup or list hit) resolves an
++     intent (ACCEPTED). Negative evidence, elapsed time and incomplete listings never prove
++     absence; the intent stays UNRESOLVED and queued. State changes are compare-and-set, so a
++     stale caller cannot downgrade ACCEPTED/REJECTED. REJECTED only from a definitive 4xx on the
++     single POST. resubmit() is DISABLED in round 2 (read-only reconcile, never POSTs).
++  Timeout/deadline bounds and paper-plan sizing are OPEN (next round).
+ 
+ It does not bypass broker validation: every order still goes through submit_order and the
+ broker's own checks. Undocumented broker behavior (duplicate client ids, lookup visibility
+@@ -29,6 +34,7 @@ import random
+ import sqlite3
+ import time
+ import uuid
++from contextlib import closing
+ from dataclasses import dataclass, field
+ from datetime import datetime, timedelta, timezone
+ from typing import Any, Callable, Optional
+@@ -193,16 +199,26 @@ CREATE TABLE IF NOT EXISTS order_intents (
+   order_id TEXT, submit_attempts INTEGER NOT NULL DEFAULT 0,
+   created_ns INTEGER NOT NULL, last_submit_ns INTEGER, updated_ns INTEGER NOT NULL, last_error TEXT);
+ """
+-# States: SUBMITTING (intent durable, POST may or may not have reached the broker)
+-#         ACCEPTED (broker order id known) | REJECTED (definitive 4xx on POST)
+-#         UNRESOLVED (ambiguous; reconcile by client id)
+-#         NOT_FOUND_AFTER_WINDOW (absent by lookup AND list after the window; resubmit allowed)
++# States (round 2):
++#   SUBMITTING  intent durable; the POST may or may not have reached the broker
++#   ACCEPTED    broker order id known (terminal for this layer)
++#   REJECTED    definitive 4xx on the ONLY POST ever made for this id (terminal)
++#   UNRESOLVED  outcome unknown; stays in the recovery queue until broker evidence appears
++# Allowed transitions (compare-and-set; anything else is refused):
++#   SUBMITTING -> ACCEPTED | REJECTED(only if submit_attempts == 1) | UNRESOLVED
++#   UNRESOLVED -> ACCEPTED | UNRESOLVED
++#   ACCEPTED / REJECTED -> (none)
++# Retired: NOT_FOUND_AFTER_WINDOW (absence is never inferred; legacy rows are treated as UNRESOLVED).
++PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")
++_ALLOWED_FROM = {"ACCEPTED": ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"),
++                 "REJECTED": ("SUBMITTING",),
++                 "UNRESOLVED": ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")}
+ 
+ 
+ class IntentStore:
+     def __init__(self, path: str, fail_hook: Optional[Callable[[str], None]] = None):
+         self.path, self.fail_hook = path, fail_hook
+-        with self._c() as c:
++        with closing(self._c()) as c:
+             c.executescript(INTENT_SCHEMA)
+ 
+     def _c(self):
+@@ -211,44 +227,64 @@ class IntentStore:
+         c.execute("PRAGMA synchronous=FULL")      # durable before we act on it
+         return c
+ 
+-    def _write(self, op: str, sql: str, args: tuple):
++    def _write(self, op: str, sql: str, args: tuple) -> int:
++        """Returns rowcount. Raises PersistenceError on storage failure;
++        sqlite3.IntegrityError is re-raised unchanged (callers treat it as 'already exists')."""
+         try:
+             if self.fail_hook:
+                 self.fail_hook(op)                 # test fault injection, handled like a real failure
+-            with self._c() as c:
++            with closing(self._c()) as c:
+                 c.execute("BEGIN IMMEDIATE")
+-                c.execute(sql, args)
++                cur = c.execute(sql, args)
++                n = cur.rowcount
+                 c.execute("COMMIT")
++                return n
++        except sqlite3.IntegrityError:
++            raise
+         except Exception as e:  # noqa: BLE001
+             raise PersistenceError(f"{op}: {e}") from e
+ 
+     def get(self, cid: str) -> Optional[dict]:
+-        with self._c() as c:
++        with closing(self._c()) as c:
+             c.row_factory = sqlite3.Row
+             r = c.execute("SELECT * FROM order_intents WHERE client_order_id=?", (cid,)).fetchone()
+         return dict(r) if r else None
+ 
+     def pending(self) -> list:
+-        with self._c() as c:
++        """The recovery queue: every intent whose broker outcome is not yet known."""
++        with closing(self._c()) as c:
+             c.row_factory = sqlite3.Row
+-            return [dict(r) for r in c.execute(
+-                "SELECT * FROM order_intents WHERE state IN ('SUBMITTING','UNRESOLVED')")]
++            q = "SELECT * FROM order_intents WHERE state IN (%s)" % ",".join("?" * len(PENDING_STATES))
++            return [dict(r) for r in c.execute(q, PENDING_STATES)]
+ 
+-    def create_submitting(self, cid, purpose, symbol, payload, now_ns):
++    def create_submitting(self, cid, purpose, symbol, payload, now_ns) -> bool:
++        """True if this caller created the intent (and therefore owns the single POST);
++        False if the id already exists (another caller owns it). Storage failure raises."""
+         pj = json.dumps(payload, sort_keys=True, default=str)
+-        self._write("create_submitting",
+-                    "INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
+-                    "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
+-                    (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
+-                     now_ns, now_ns, now_ns))
+-
++        try:
++            self._write("create_submitting",
++                        "INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
++                        "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
++                        (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
++                         now_ns, now_ns, now_ns))
++            return True
++        except sqlite3.IntegrityError:
++            return False
++
++    def transition(self, cid, to_state, now_ns, order_id=None, error=None) -> bool:
++        """Compare-and-set. True only if the row was in an allowed source state and was updated.
++        REJECTED additionally requires submit_attempts == 1 (a single, definitive POST)."""
++        src = _ALLOWED_FROM[to_state]
++        extra = " AND submit_attempts = 1" if to_state == "REJECTED" else ""
++        sql = ("UPDATE order_intents SET state=?, order_id=COALESCE(?,order_id), last_error=?, updated_ns=? "
++               "WHERE client_order_id=? AND state IN (%s)%s" % (",".join("?" * len(src)), extra))
++        return self._write(f"mark_{to_state}", sql, (to_state, order_id, error, now_ns, cid) + src) == 1
++
++    # Backwards-compatible alias used by older call sites/tests: now also compare-and-set.
+     def mark(self, cid, state, now_ns, order_id=None, error=None, bump_attempt=False):
+-        self._write(f"mark_{state}",
+-                    "UPDATE order_intents SET state=?, order_id=COALESCE(?,order_id), last_error=?, "
+-                    "updated_ns=?, submit_attempts=submit_attempts+?, "
+-                    "last_submit_ns=CASE WHEN ? THEN ? ELSE last_submit_ns END WHERE client_order_id=?",
+-                    (state, order_id, error, now_ns, 1 if bump_attempt else 0,
+-                     1 if bump_attempt else 0, now_ns, cid))
++        if bump_attempt:
++            raise PersistenceError("re-submission is disabled; attempts cannot be bumped")
++        return self.transition(cid, state, now_ns, order_id=order_id, error=error)
+ 
+ 
+ def new_client_order_id(prefix: str) -> str:
+@@ -259,13 +295,34 @@ def new_client_order_id(prefix: str) -> str:
+ 
+ 
+ # ------------------------------------------------------------------ submissions
++RESUBMISSION_ENABLED = False   # Round 2 policy: never re-POST an ambiguous intent automatically.
++
++
+ @dataclass
+ class SubmitResult:
++    """Outcome of one gateway call. Callers MUST read `state` AND `persisted`.
++
++    state:
++      ACCEPTED      the broker has this order; `order_id` is set.
++      REJECTED      the single POST was definitively refused (400/401/403/422 on attempt 1).
++      UNRESOLVED    outcome unknown. NOT "not placed". Exposure may exist.
++      NOT_SUBMITTED nothing was sent (intent could not be made durable).
++      CONFLICT      broker evidence contradicts the stored terminal state; needs a human.
++    persisted: False if the result could not be written to the intent store. The intent row then
++      stays in the recovery queue, and recover_pending()/reconcile() will record it later.
++    """
+     state: str
+     client_order_id: str
++    order_id: Optional[str] = None
+     order: Any = None
+     detail: str = ""
+     posts_this_call: int = 0
++    persisted: bool = True
++    persistence_error: Optional[str] = None
++
++    @property
++    def exposure_may_exist(self) -> bool:
++        return self.state in ("ACCEPTED", "UNRESOLVED", "CONFLICT")
+ 
+ 
+ class OrderGateway:
+@@ -282,91 +339,154 @@ class OrderGateway:
+     def _payload(order_request) -> dict:
+         return order_request.to_request_fields()
+ 
++    @staticmethod
++    def _sha(payload) -> str:
++        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
++
++    def _row(self, cid):
++        """(row, error). Never raises: a store read failure is reported, not thrown."""
++        try:
++            return self.store.get(cid), None
++        except Exception as e:  # noqa: BLE001
++            return None, f"store read failed: {type(e).__name__}: {e}"
++
++    def _from_row(self, cid, detail="", posts=0, **kw) -> SubmitResult:
++        row, err = self._row(cid)
++        if err:
++            return SubmitResult("UNRESOLVED", cid, detail=f"{detail}; {err}".strip("; "), posts_this_call=posts,
++                                persisted=False, persistence_error=err)
++        st = row["state"] if row else "UNRESOLVED"
++        if st == "NOT_FOUND_AFTER_WINDOW":        # legacy state: never trusted as absence
++            st = "UNRESOLVED"
++        return SubmitResult(st, cid, order_id=row["order_id"] if row else None, detail=detail,
++                            posts_this_call=posts, **kw)
++
++    def _record(self, cid, to_state, order_id=None, error=None):
++        """(applied, persisted, persistence_error). Never raises."""
++        try:
++            return self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error), True, None
++        except PersistenceError as e:
++            return False, False, str(e)
++
+     def submit(self, order_request, purpose: str) -> SubmitResult:
+         cid = getattr(order_request, "client_order_id", None)
+         if not cid:
+             raise ValueError("every order must carry a client_order_id (use new_client_order_id)")
+-        existing = self.store.get(cid)
++        payload = self._payload(order_request)
++        existing, err = self._row(cid)
++        if err:
++            return SubmitResult("NOT_SUBMITTED", cid, detail="intent store unreadable; nothing sent",
++                                persisted=False, persistence_error=err)
+         if existing is not None:
+-            if existing["payload_sha"] != hashlib.sha256(
+-                    json.dumps(self._payload(order_request), sort_keys=True, default=str).encode()).hexdigest():
++            if existing["payload_sha"] != self._sha(payload):
+                 raise ValueError(f"client_order_id {cid} already used with a different payload")
+-            # Idempotent: never POST again from submit(); use reconcile()/resubmit().
+-            return SubmitResult(existing["state"], cid, detail="existing intent; no POST")
+-        # 1) durable intent BEFORE the POST (raises PersistenceError -> nothing sent)
+-        self.store.create_submitting(cid, purpose, self.symbol, self._payload(order_request), self.now_ns())
++            return self._from_row(cid, detail="existing intent; no POST")
++        try:
++            created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
++        except PersistenceError as e:
++            return SubmitResult("NOT_SUBMITTED", cid, detail="intent not durable; nothing sent",
++                                persisted=False, persistence_error=str(e))
++        if not created:                             # another caller won the insert and owns the POST
++            return self._from_row(cid, detail="intent owned by another caller; no POST")
+         return self._post_and_record(order_request, cid)
+ 
+     def _post_and_record(self, order_request, cid) -> SubmitResult:
++        """The single POST for this id. Never raises after the POST has been attempted."""
+         try:
+             order = self.client.submit_order(order_request)          # exactly one POST (SDK retry=0)
+         except Exception as e:  # noqa: BLE001
+             s = _status(e)
+-            if s in DEFINITIVE_REJECT_HTTP:
+-                self.store.mark(cid, "REJECTED", self.now_ns(), error=f"{s}:{_code(e)}:{str(e)[:160]}")
+-                return SubmitResult("REJECTED", cid, detail=f"HTTP {s}", posts_this_call=1)
+-            # ambiguous: 429/5xx/timeout/connection/non-JSON — reconcile by the SAME id, never re-POST
+-            self.store.mark(cid, "UNRESOLVED", self.now_ns(), error=f"{type(e).__name__}:{s}:{str(e)[:160]}")
++            row, _ = self._row(cid)
++            # This caller created the row and resubmission is disabled, so if the row can't be
++            # read, this POST is still known to be the only one for the id.
++            attempts = (row or {}).get("submit_attempts", 1)
++            if s in DEFINITIVE_REJECT_HTTP and attempts == 1:
++                applied, ok, perr = self._record(cid, "REJECTED", error=f"{s}:{_code(e)}:{str(e)[:160]}")
++                if ok and not applied:
++                    return self._from_row(cid, detail="state changed concurrently", posts=1)
++                return SubmitResult("REJECTED", cid, detail=f"HTTP {s} on the only POST", posts_this_call=1,
++                                    persisted=ok, persistence_error=perr)
++            # Ambiguous (429/5xx/timeout/connection/non-JSON, or a 4xx that is not provably first).
++            _, ok, perr = self._record(cid, "UNRESOLVED", error=f"{type(e).__name__}:{s}:{str(e)[:160]}")
+             r = self.reconcile(cid)
+             r.posts_this_call = 1
++            if not ok and r.persisted:              # the first write failed; report it even if later ones worked
++                r.persisted, r.persistence_error = False, perr
+             return r
+-        # POST succeeded; recording may still fail -> row stays SUBMITTING and reconcile() fixes it
+-        self.store.mark(cid, "ACCEPTED", self.now_ns(), order_id=str(order.id))
+-        return SubmitResult("ACCEPTED", cid, order=order, posts_this_call=1)
++        oid = str(order.id)
++        applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
++        # Known identity is returned even if it could not be saved.
++        return SubmitResult("ACCEPTED", cid, order_id=oid, order=order, posts_this_call=1,
++                            persisted=ok, persistence_error=perr,
++                            detail="" if ok else "accepted; result NOT saved (row stays in recovery queue)")
+ 
+     def reconcile(self, cid) -> SubmitResult:
+-        row = self.store.get(cid)
++        """Resolve an intent from broker evidence. Positive evidence (lookup or list hit) may
++        move it to ACCEPTED. Negative evidence NEVER resolves it: it stays UNRESOLVED and queued.
++        Never raises for storage failures; never downgrades a terminal state."""
++        row, err = self._row(cid)
++        if err:
++            return SubmitResult("UNRESOLVED", cid, detail=err, persisted=False, persistence_error=err)
+         if row is None:
+             raise KeyError(cid)
+         if row["state"] in ("ACCEPTED", "REJECTED"):
+-            return SubmitResult(row["state"], cid, detail="already resolved")
++            return self._from_row(cid, detail="already resolved")
+         r = read(lambda: self.client.get_order_by_client_id(cid), **self.read_kw)
+-        if r.state == "OK":
+-            self.store.mark(cid, "ACCEPTED", self.now_ns(), order_id=str(r.value.id))
+-            return SubmitResult("ACCEPTED", cid, order=r.value, detail="found by client id")
+-        if r.state != "NOT_FOUND":
+-            self._mark_unresolved(row, cid, f"lookup {r.state}: {r.error}")
+-            return SubmitResult("UNRESOLVED", cid, detail=f"lookup {r.state}")
+-        # Lookup says not found. Only after the visibility window AND an independent list query.
+-        if self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) < self.window_ns:
+-            self._mark_unresolved(row, cid, "not found yet (inside visibility window)")
+-            return SubmitResult("UNRESOLVED", cid, detail="not found; inside window")
+-        after = datetime.fromtimestamp((row["created_ns"] / 1e9) - 60, tz=timezone.utc)
+-        from alpaca.trading.enums import QueryOrderStatus
+-        from alpaca.trading.requests import GetOrdersRequest
+-        lst = read(lambda: self.client.get_orders(GetOrdersRequest(
+-            status=QueryOrderStatus.ALL, after=after, symbols=[self.symbol], limit=500)), **self.read_kw)
+-        if lst.state != "OK":
+-            self._mark_unresolved(row, cid, f"list {lst.state}")
+-            return SubmitResult("UNRESOLVED", cid, detail=f"list {lst.state}")
+-        hit = [o for o in lst.value if getattr(o, "client_order_id", None) == cid]
+-        if hit:
+-            self.store.mark(cid, "ACCEPTED", self.now_ns(), order_id=str(hit[0].id))
+-            return SubmitResult("ACCEPTED", cid, order=hit[0], detail="found by list")
+-        self.store.mark(cid, "NOT_FOUND_AFTER_WINDOW", self.now_ns())
+-        return SubmitResult("NOT_FOUND_AFTER_WINDOW", cid,
+-                            detail="absent by lookup and list after window (inference, not a guarantee)")
+-
+-    def _mark_unresolved(self, row, cid, err):
+-        if row["state"] != "UNRESOLVED" or row.get("last_error") != err:
+-            self.store.mark(cid, "UNRESOLVED", self.now_ns(), error=err)
++        found = r.value if r.state == "OK" else None
++        how = "found by client id"
++        if found is None and r.state == "NOT_FOUND" and \
++                self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) >= self.window_ns:
++            # Supplementary POSITIVE evidence only; an incomplete/lagging list proves nothing.
++            from alpaca.trading.enums import QueryOrderStatus
++            from alpaca.trading.requests import GetOrdersRequest
++            after = datetime.fromtimestamp((row["created_ns"] / 1e9) - 60, tz=timezone.utc)
++            lst = read(lambda: self.client.get_orders(GetOrdersRequest(
++                status=QueryOrderStatus.ALL, after=after, symbols=[self.symbol], limit=500)), **self.read_kw)
++            if lst.state == "OK":
++                hit = [o for o in lst.value if getattr(o, "client_order_id", None) == cid]
++                if hit:
++                    found, how = hit[0], "found by list"
++        if found is not None:
++            oid = str(found.id)
++            applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
++            if ok and not applied:
++                cur = self._from_row(cid, detail="state changed concurrently")
++                if cur.state == "ACCEPTED":
++                    return cur
++                return SubmitResult("CONFLICT", cid, order_id=oid, order=found,
++                                    detail=f"broker has order {oid} but intent is {cur.state}")
++            return SubmitResult("ACCEPTED", cid, order_id=oid, order=found, detail=how,
++                                persisted=ok, persistence_error=perr)
++        why = {"NOT_FOUND": "no broker evidence yet (NOT proof of absence)",
++               "UNAVAILABLE": "lookup UNAVAILABLE", "ERROR": f"lookup ERROR: {r.error}"}.get(r.state, r.state)
++        applied, ok, perr = self._record(cid, "UNRESOLVED", error=why)
++        if ok and not applied:                      # a concurrent caller resolved it: report that, don't downgrade
++            return self._from_row(cid, detail="resolved concurrently")
++        return SubmitResult("UNRESOLVED", cid, order_id=row.get("order_id"), detail=why,
++                            persisted=ok, persistence_error=perr)
+ 
+     def resubmit(self, order_request) -> SubmitResult:
+-        """Explicit, caller-initiated. Reconciles FIRST with the same identity; POSTs again only
+-        from NOT_FOUND_AFTER_WINDOW, with the same client id and identical payload."""
++        """DISABLED (round 2). Elapsed time and negative lookups never authorize another POST.
++        Verifies the payload, runs a read-only reconcile, and returns its result. No POST."""
+         cid = order_request.client_order_id
+-        row = self.store.get(cid)
++        row, err = self._row(cid)
++        if err:
++            return SubmitResult("UNRESOLVED", cid, detail=err + "; automatic resubmission disabled",
++                                persisted=False, persistence_error=err)
+         if row is None:
+             raise KeyError(cid)
+-        if row["payload_sha"] != hashlib.sha256(
+-                json.dumps(self._payload(order_request), sort_keys=True, default=str).encode()).hexdigest():
++        if row["payload_sha"] != self._sha(self._payload(order_request)):
+             raise ValueError("resubmit payload differs from the recorded intent")
+         r = self.reconcile(cid)
+-        if r.state != "NOT_FOUND_AFTER_WINDOW":
+-            return r                                      # found, rejected, or still unknown: no POST
+-        self.store.mark(cid, "SUBMITTING", self.now_ns(), bump_attempt=True)
+-        return self._post_and_record(order_request, cid)
++        if not RESUBMISSION_ENABLED:
++            r.detail = (r.detail + "; " if r.detail else "") + "automatic resubmission disabled"
++        return r
+ 
+     def recover_pending(self) -> list:
+-        """On startup: every SUBMITTING/UNRESOLVED intent is reconciled (never re-POSTed)."""
+-        return [self.reconcile(row["client_order_id"]) for row in self.store.pending()]
++        """On startup and every cycle: reconcile each queued intent. Never POSTs."""
++        try:
++            rows = self.store.pending()
++        except Exception as e:  # noqa: BLE001
++            err = f"recovery queue unreadable: {type(e).__name__}: {e}"
++            return [SubmitResult("UNRESOLVED", "*", detail=err, persisted=False, persistence_error=err)]
++        return [self.reconcile(row["client_order_id"]) for row in rows]
+diff --git a/review/p8_sdk_transport/proposed/test_broker_io.py b/review/p8_sdk_transport/proposed/test_broker_io.py
+index 230e238..dc14f5a 100644
+--- a/review/p8_sdk_transport/proposed/test_broker_io.py
++++ b/review/p8_sdk_transport/proposed/test_broker_io.py
+@@ -282,9 +282,10 @@ class C_Persistence(unittest.TestCase):
+             if op == "create_submitting":
+                 raise sqlite_error()
+         s.fail_hook = fail
+-        with self.assertRaises(B.PersistenceError):
+-            gw.submit(req("t-c1"), "test")
+-        self.assertEqual(b.posts(), [])
++        # CHANGED (round 2, finding 5): an explicit NOT_SUBMITTED result replaces the exception.
++        r = gw.submit(req("t-c1"), "test")
++        self.assertEqual((r.state, r.persisted), ("NOT_SUBMITTED", False))
++        self.assertEqual(b.posts(), [])                           # safety assertion unchanged
+ 
+     def test_record_failure_after_accepted_post_is_recovered(self):
+         b, c, s, gw, clk = make()
+@@ -295,9 +296,10 @@ class C_Persistence(unittest.TestCase):
+                 state["n"] += 1
+                 raise sqlite_error()
+         s.fail_hook = fail
+-        with self.assertRaises(B.PersistenceError):
+-            gw.submit(req("t-c2"), "test")
+-        self.assertEqual(s.get("t-c2")["state"], "SUBMITTING")     # intent survived
++        # CHANGED (round 2, finding 5): the accepted order is RETURNED with its identity, not raised.
++        r = gw.submit(req("t-c2"), "test")
++        self.assertEqual((r.state, r.order_id, r.persisted), ("ACCEPTED", b.orders[0]["id"], False))
++        self.assertEqual(s.get("t-c2")["state"], "SUBMITTING")     # intent survived (unchanged)
+         s.fail_hook = None
+         rec = gw.recover_pending()
+         self.assertEqual([r.state for r in rec], ["ACCEPTED"])
+@@ -322,10 +324,14 @@ class D_ReconcileAndResubmit(unittest.TestCase):
+         self.assertEqual(gw2.resubmit(req("t-d1")).state, "UNRESOLVED")   # still inside window: no POST
+         self.assertEqual(b.posts(), [])
+         clk.t += 31
+-        r = gw2.resubmit(req("t-d1"))                            # reconcile (lookup+list) first, then POST
+-        self.assertEqual((r.state, len(b.posts())), ("ACCEPTED", 1))
+-        self.assertEqual(json.loads(json.dumps(b.orders))[0]["client_order_id"], "t-d1")
+-        self.assertEqual(s2.get("t-d1")["submit_attempts"], 2)
++        # CHANGED (round 2, finding 3 + policy): elapsed time and negative lookup/list no longer
++        # authorize a POST. The intent stays UNRESOLVED and queued; resolving an intent that truly
++        # never reached the broker now requires an explicit human decision (not automated).
++        r = gw2.resubmit(req("t-d1"))
++        self.assertEqual((r.state, len(b.posts())), ("UNRESOLVED", 0))
++        self.assertEqual(b.orders, [])
++        self.assertIn("t-d1", [x["client_order_id"] for x in s2.pending()])
++        self.assertEqual(s2.get("t-d1")["submit_attempts"], 1)
+ 
+     def test_crash_after_accepted_post_restart_reconciles_without_post(self):
+         db = os.path.join(tempfile.mkdtemp(), "i.db")
+diff --git a/review/p8_sdk_transport/proposed/test_p8_round2.py b/review/p8_sdk_transport/proposed/test_p8_round2.py
+index ead1539..e6bb8f9 100644
+--- a/review/p8_sdk_transport/proposed/test_p8_round2.py
++++ b/review/p8_sdk_transport/proposed/test_p8_round2.py
+@@ -303,3 +303,45 @@ class F5_PersistenceFailure(unittest.TestCase):
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
++
++class F5b_StoreReadFailureAfterPost(unittest.TestCase):
++    """Found in self-review of the round-2 fix: store READS were unwrapped, so a read failure
++    after the POST could still escape as an exception."""
++
++    def break_reads_after(self, gw, ok_calls):
++        real_get, n = gw.store.get, {"k": 0}
++
++        def flaky_get(cid):
++            n["k"] += 1
++            if n["k"] > ok_calls:
++                raise T.sqlite_error()
++            return real_get(cid)
++        gw.store.get = flaky_get
++
++    def test_ambiguous_post_then_store_reads_fail_returns_unresolved(self):
++        b, c, gw, clk, db = make2()
++        b.post = [("status", 504, T.J504)]
++        self.break_reads_after(gw, ok_calls=1)          # the pre-POST existence check succeeds
++        r, err = call_safely(lambda: gw.submit(T.req("r-f5e"), "test"))
++        self.assertIsNone(err, f"post-POST read failure escaped: {err!r}")
++        self.assertEqual(r.state, "UNRESOLVED")
++        self.assertIs(r.persisted, False)
++        self.assertEqual(len(posts(b)), 1)
++        self.assertIn("r-f5e", [x["client_order_id"] for x in B.IntentStore(db).pending()])
++
++    def test_rejected_post_then_store_reads_fail_still_no_exception(self):
++        b, c, gw, clk, db = make2()
++        b.post = [("status", 403, T.J403)]
++        self.break_reads_after(gw, ok_calls=1)
++        r, err = call_safely(lambda: gw.submit(T.req("r-f5f"), "test"))
++        self.assertIsNone(err, f"post-POST read failure escaped: {err!r}")
++        self.assertEqual(len(posts(b)), 1)
++        self.assertIn(r.state, ("REJECTED", "UNRESOLVED"))
++
++    def test_pre_post_read_failure_is_not_submitted(self):
++        b, c, gw, clk, db = make2()
++        self.break_reads_after(gw, ok_calls=0)
++        r, err = call_safely(lambda: gw.submit(T.req("r-f5g"), "test"))
++        self.assertIsNone(err, f"pre-POST read failure raised: {err!r}")
++        self.assertEqual((r.state, len(posts(b))), ("NOT_SUBMITTED", 0))
+diff --git a/review/p8_sdk_transport/round2_evidence/existing30_AFTER.txt b/review/p8_sdk_transport/round2_evidence/existing30_AFTER.txt
+new file mode 100644
+index 0000000..6ba9416
+--- /dev/null
++++ b/review/p8_sdk_transport/round2_evidence/existing30_AFTER.txt
+@@ -0,0 +1,38 @@
++# Existing 30 vs FIX (3 expectations changed, see ROUND2_REVIEW.md)
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++
++----------------------------------------------------------------------
++Ran 30 tests in 2.946s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/p8_sdk_transport/round2_evidence/round2_full15_AFTER.txt b/review/p8_sdk_transport/round2_evidence/round2_full15_AFTER.txt
+new file mode 100644
+index 0000000..b375082
+--- /dev/null
++++ b/review/p8_sdk_transport/round2_evidence/round2_full15_AFTER.txt
+@@ -0,0 +1,25 @@
++# Full round-2 suite (15) vs FIX
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++
++----------------------------------------------------------------------
++Ran 15 tests in 0.411s
++
++OK
+diff --git a/review/p8_sdk_transport/round2_evidence/round2_full15_BEFORE_eddcdda.txt b/review/p8_sdk_transport/round2_evidence/round2_full15_BEFORE_eddcdda.txt
+new file mode 100644
+index 0000000..4f82b4d
+--- /dev/null
++++ b/review/p8_sdk_transport/round2_evidence/round2_full15_BEFORE_eddcdda.txt
+@@ -0,0 +1,151 @@
++# Full round-2 suite (15) vs BASELINE eddcdda broker_io.py, identical fixtures, 2026-09-23 08:32 AM PDT
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... FAIL
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... FAIL
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... FAIL
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... FAIL
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... FAIL
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... FAIL
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... FAIL
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... FAIL
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... FAIL
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... FAIL
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... FAIL
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... FAIL
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... FAIL
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... FAIL
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++
++======================================================================
++FAIL: test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 136, in test_concurrent_first_submit_same_id_single_post_no_exception
++    self.assertEqual(errors, [], f"a concurrent submit raised instead of returning a result: {errors}")
++AssertionError: Lists differ: [PersistenceError('create_submitting: UNIQ[49 chars]id')] != []
++
++First list contains 1 additional elements.
++First extra element 0:
++PersistenceError('create_submitting: UNIQUE constraint failed: order_intents.client_order_id')
++
++- [PersistenceError('create_submitting: UNIQUE constraint failed: order_intents.client_order_id')]
+++ [] : a concurrent submit raised instead of returning a result: [PersistenceError('create_submitting: UNIQUE constraint failed: order_intents.client_order_id')]
++
++======================================================================
++FAIL: test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit.
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 117, in test_concurrent_resubmit_never_double_posts
++    self.assertEqual(len(posts(b)), 1, f"resubmit POSTed {len(posts(b)) - 1} more time(s)")
++AssertionError: 3 != 1 : resubmit POSTed 2 more time(s)
++
++======================================================================
++FAIL: test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 167, in test_stale_reconcile_cannot_downgrade_accepted
++    self.assertEqual(state(db, "r-f1c")["state"], "ACCEPTED", "stale reconcile downgraded ACCEPTED")
++AssertionError: 'NOT_FOUND_AFTER_WINDOW' != 'ACCEPTED'
++- NOT_FOUND_AFTER_WINDOW
+++ ACCEPTED
++ : stale reconcile downgraded ACCEPTED
++
++======================================================================
++FAIL: test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 182, in test_later_422_does_not_mark_rejected_or_stop_reconciliation
++    self.assertNotEqual(state(db, "r-f2")["state"], "REJECTED", "earlier accepted order hidden behind REJECTED")
++AssertionError: 'REJECTED' == 'REJECTED' : earlier accepted order hidden behind REJECTED
++
++======================================================================
++FAIL: test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 200, in test_delayed_visibility_beyond_window_no_resubmit
++    self.assertEqual(len(posts(b)), 1, "elapsed time + negative lookup authorized another POST")
++AssertionError: 2 != 1 : elapsed time + negative lookup authorized another POST
++
++======================================================================
++FAIL: test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all.
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 227, in test_even_full_negative_evidence_does_not_authorize_resubmit
++    self.assertEqual(len(posts(b)), 1)
++AssertionError: 2 != 1
++
++======================================================================
++FAIL: test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 216, in test_truncated_listing_is_not_proof_of_absence
++    self.assertEqual(len(posts(b)), 1, "a truncated listing authorized another POST")
++AssertionError: 2 != 1 : a truncated listing authorized another POST
++
++======================================================================
++FAIL: test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 237, in test_every_accepted_result_carries_the_stored_order_id
++    self.assertEqual(getattr(r1, "order_id", None), oid, "submit->reconcile ACCEPTED lacks order_id")
++AssertionError: None != 'ef0e6030-2684-4060-8687-c2e9f8c0fd91' : submit->reconcile ACCEPTED lacks order_id
++
++======================================================================
++FAIL: test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 262, in test_accepted_then_record_fails_returns_known_identity
++    self.assertIsNone(err, f"accepted order hidden behind exception: {err!r}")
++AssertionError: PersistenceError('mark_ACCEPTED: disk I/O error (injected)') is not None : accepted order hidden behind exception: PersistenceError('mark_ACCEPTED: disk I/O error (injected)')
++
++======================================================================
++FAIL: test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 276, in test_ambiguous_then_record_fails_returns_unresolved_not_exception
++    self.assertIsNone(err, f"ambiguous outcome hidden behind exception: {err!r}")
++AssertionError: PersistenceError('mark_UNRESOLVED: disk I/O error (injected)') is not None : ambiguous outcome hidden behind exception: PersistenceError('mark_UNRESOLVED: disk I/O error (injected)')
++
++======================================================================
++FAIL: test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 299, in test_intent_write_failure_returns_not_submitted_zero_posts
++    self.assertIsNone(err, f"pre-submit failure raised instead of an explicit result: {err!r}")
++AssertionError: PersistenceError('create_submitting: disk I/O error (injected)') is not None : pre-submit failure raised instead of an explicit result: PersistenceError('create_submitting: disk I/O error (injected)')
++
++======================================================================
++FAIL: test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 290, in test_reconcile_found_but_record_fails_still_returns_identity
++    self.assertIsNone(err, f"found order hidden behind exception: {err!r}")
++AssertionError: PersistenceError('mark_ACCEPTED: disk I/O error (injected)') is not None : found order hidden behind exception: PersistenceError('mark_ACCEPTED: disk I/O error (injected)')
++
++======================================================================
++FAIL: test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 327, in test_ambiguous_post_then_store_reads_fail_returns_unresolved
++    self.assertIsNone(err, f"post-POST read failure escaped: {err!r}")
++AssertionError: OperationalError('disk I/O error (injected)') is not None : post-POST read failure escaped: OperationalError('disk I/O error (injected)')
++
++======================================================================
++FAIL: test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost)
++----------------------------------------------------------------------
++Traceback (most recent call last):
++  File "/private/tmp/p8_base/test_p8_round2.py", line 346, in test_pre_post_read_failure_is_not_submitted
++    self.assertIsNone(err, f"pre-POST read failure raised: {err!r}")
++AssertionError: OperationalError('disk I/O error (injected)') is not None : pre-POST read failure raised: OperationalError('disk I/O error (injected)')
++
++----------------------------------------------------------------------
++Ran 15 tests in 0.439s
++
++FAILED (failures=14)
+-- 
+2.54.0 (Apple Git-157)
+
