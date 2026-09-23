@@ -33,8 +33,10 @@ happens across cycles and after a restart, and it completes while its own sell i
   - Adopting R1 means replacing that expectation with "escalate, no resubmit".
 
 **Alternatives:**
-- **R1b:** automatic resubmit after a longer bound. Residual double-sell risk if visibility exceeds the
-  bound; **not recommended without paper evidence of the maximum visibility delay**.
+- **R1b:** automatic resubmit after a longer bound. There is a residual double-sell risk whenever
+  visibility exceeds the bound. Observed paper delays **cannot establish a universal maximum** (live
+  behavior, load and incidents differ), so no bound makes an automatic resubmit provably safe.
+  *(Corrected in R1 v2; see `R1v2_PROPOSAL.md`.)*
 - **R2:** route liquidation through the P8 broker I/O layer. It already requires NEGATIVE_COMPLETE (404 +
   complete bounded scan + fresh check) before treating an intent as not placed. Gated on D7–D10
   integration.
@@ -85,8 +87,8 @@ liquidation cancelled its stop) has **no bound on duration or loss**.
 ## Validation before any deployment
 
 1. Offline suites green (including the chosen R1/D8/D10 tests).
-2. Paper contract tests (D3/D4) of the client-id 404 semantics and the observed visibility delay (sets the
-   R1 bounds).
+2. Paper contract tests (D3/D4) of the client-id 404 semantics and **observed** visibility delays. These
+   inform escalation thresholds only; they do not establish a maximum or a safe resubmit time.
 3. Cutover dry-run with a real snapshot on the paper account.
 
 **Rollback:**
