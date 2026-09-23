@@ -1,0 +1,292 @@
+"""Round-3b regression tests: unavailable evidence vs successful negative observation in human
+resolution; uniqueness uncertainty that must persist; operator/reconcile races; pagination
+failures during human-resolution checks.
+
+Run: cd review/p8_sdk_transport/proposed && /usr/bin/python3 -m unittest -v test_p8_round3b
+Written BEFORE the fix; run unchanged against baseline 83ef87c (fix commit 344dcb2) and the fix.
+Fixture additions live in Broker3b only; the round-1/2/3 fixtures are unchanged.
+"""
+import json
+import unittest
+
+import test_broker_io as T
+import test_p8_round2 as R2
+import test_p8_round3 as R3
+import broker_io as B
+
+
+class Broker3b(R3.Broker3):
+    """Adds: list outage (raise), and 'stuck' pagination (every page identical and full)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.list_raise = None
+        self.stuck = False
+
+    def _transport_send(self, req, **kw):
+        path = req.url.split("/v2")[-1]
+        is_list = req.method == "GET" and path.startswith("/orders") and "by_client_order_id" not in path
+        if is_list and self.list_raise is not None:
+            self.list_calls += 1
+            raise self.list_raise
+        if is_list and self.stuck:
+            self.list_calls += 1
+            page = [self.stamp(T.order_json(str(T.uuid.uuid4()), f"stuck-{i}", {"qty": 0.0001, "type": "limit",
+                    "side": "buy", "time_in_force": "gtc", "limit_price": 1})) for i in range(500)]
+            for o in page:
+                o["created_at"] = R3.iso(R3.T0)          # identical stamps -> cursor cannot advance
+            return self._resp(req, 200, json.dumps(page))
+        return super()._transport_send(req, **kw)
+
+
+def make3b(db=None):
+    broker = Broker3b()
+    client = T.TradingClient("PKP8TESTONLY000000000", "p8-test-secret-not-real", paper=True)
+    B.configure_client(client, adapter=broker)
+    clock = T.Clock()
+    clock.t = R3.T0.timestamp()
+    import os, tempfile
+    db = db or os.path.join(tempfile.mkdtemp(), "intents.db")
+    gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
+    return broker, client, gw, clock, db
+
+
+def gateway(client, db, clock):
+    gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
+    return gw
+
+
+def unresolved_never_sent(maker=make3b, cid="r3b"):
+    b, c, gw, clk, db = maker()
+    b.post = [("raise", T.requests.exceptions.ConnectTimeout("ct"))]   # POST never reached the broker
+    gw.submit(T.req(cid), "test")
+    return b, c, gw, clk, db
+
+
+def kinds(gw, cid):
+    return [e["kind"] for e in gw.store.events(cid)]
+
+
+def state(db, cid):
+    return B.IntentStore(db).get(cid)["state"]
+
+
+def queued(db):
+    return [r["client_order_id"] for r in B.IntentStore(db).pending()]
+
+
+OUTAGE = T.requests.exceptions.ConnectionError("simulated broker outage")
+
+
+class A_EvidenceQuality(unittest.TestCase):
+    def test_codex_reproduction_all_reads_fail(self):
+        """Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py."""
+        b, c, g, clk, db = R3.G5_HumanResolution().unresolved()
+
+        def unavailable(*a, **k):
+            raise OUTAGE
+        c.get_order_by_client_id = unavailable
+        c.get_orders = unavailable
+        a = g.abandon("r3-g5", operator="reviewer", note="offline test, no real authorization")
+        locked_before = g.entries_locked()[0]
+        r = g.release_entry_lock("r3-g5", operator="reviewer", note="offline test while broker unavailable")
+        self.assertTrue(locked_before)
+        self.assertTrue(g.entries_locked()[0], "entry lock released although every broker read failed")
+        self.assertNotEqual(a.state, "ABANDONED", "abandoned on failed evidence")
+        self.assertEqual(state(db, "r3-g5"), "UNRESOLVED")
+        self.assertNotIn("ABANDONED", kinds(g, "r3-g5"))
+        self.assertNotIn("LOCK_RELEASED", kinds(g, "r3-g5"))
+        self.assertIn("r3-g5", queued(db))
+
+    def test_lookup_negative_but_listing_fails_refuses_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        b.list_raise = OUTAGE
+        a = gw.abandon("r3b", operator="op", note="n")
+        self.assertEqual((a.state, state(db, "r3b")), ("UNRESOLVED", "UNRESOLVED"))
+        self.assertNotIn("ABANDONED", kinds(gw, "r3b"))
+
+    def test_lookup_unavailable_even_with_complete_listing_refuses_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        b.get_cid = [("raise", OUTAGE)] * 50
+        a = gw.abandon("r3b", operator="op", note="n")
+        self.assertEqual(state(db, "r3b"), "UNRESOLVED")
+        self.assertNotEqual(a.state, "ABANDONED")
+
+    def test_control_successful_negative_observation_allows_abandon_and_release(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        a = gw.abandon("r3b", operator="op", note="checked dashboard")
+        self.assertEqual(state(db, "r3b"), "ABANDONED")
+        self.assertTrue(gw.entries_locked()[0], "abandon alone must not unlock")
+        gw.release_entry_lock("r3b", operator="op", note="second check")
+        self.assertFalse(gw.entries_locked()[0])
+        self.assertIn("r3b", queued(db))                                   # still monitored
+
+    def test_release_refused_when_broker_reads_fail_after_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        gw.abandon("r3b", operator="op", note="n")
+        b.get_cid = [("raise", OUTAGE)] * 50
+        b.list_raise = OUTAGE
+        gw.release_entry_lock("r3b", operator="op", note="n")
+        self.assertTrue(gw.entries_locked()[0])
+        self.assertNotIn("LOCK_RELEASED", kinds(gw, "r3b"))
+
+    def test_abandon_refused_when_fresh_check_cannot_be_persisted(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        n = {"k": 0}
+
+        def fail(op):
+            if op == "mark_UNRESOLVED":
+                raise T.sqlite_error()
+        gw.store.fail_hook = fail
+        a = gw.abandon("r3b", operator="op", note="n")
+        gw.store.fail_hook = None
+        self.assertEqual(state(db, "r3b"), "UNRESOLVED")
+        self.assertNotEqual(a.state, "ABANDONED")
+
+    def test_release_write_failure_keeps_lock_and_history(self):
+        b, c, gw, clk, db = unresolved_never_sent()
+        gw.abandon("r3b", operator="op", note="n")
+
+        def fail(op):
+            if op == "op_LOCK_RELEASED":
+                raise T.sqlite_error()
+        gw.store.fail_hook = fail
+        r = gw.release_entry_lock("r3b", operator="op", note="n")
+        gw.store.fail_hook = None
+        self.assertTrue(gw.entries_locked()[0])
+        self.assertIs(r.persisted, False)
+        self.assertNotIn("LOCK_RELEASED", kinds(gw, "r3b"))
+
+
+class B_UniquenessUncertaintyPersists(unittest.TestCase):
+    def found_but_scan_bounded(self):
+        b, c, gw, clk, db = make3b()
+        b.add_foreign(5000)                              # scan bound will be hit
+        b.post = [("accept_then", 504, T.J504)]          # lookup will find it; uniqueness unverifiable
+        r = gw.submit(T.req("r3b-u"), "test")
+        return b, c, gw, clk, db, r
+
+    def test_unverified_uniqueness_stays_monitored_and_locked(self):
+        b, c, gw, clk, db, r = self.found_but_scan_bounded()
+        self.assertEqual(r.order_id, b.orders[-1]["id"])
+        self.assertIn("r3b-u", queued(db), "uniqueness-unverified order left monitoring")
+        self.assertTrue(gw.entries_locked()[0], "uniqueness-unverified order cleared the entry lock")
+
+    def test_uncertainty_survives_restart(self):
+        b, c, gw, clk, db, r = self.found_but_scan_bounded()
+        gw2 = gateway(c, db, clk)
+        self.assertIn("r3b-u", queued(db))
+        self.assertTrue(gw2.entries_locked()[0])
+        again = gw2.recover_pending()
+        self.assertTrue(any(x.client_order_id == "r3b-u" for x in again))
+        self.assertTrue(gw2.entries_locked()[0])
+
+    def test_later_complete_scan_resolves_to_accepted_and_unlocks(self):
+        b, c, gw, clk, db, r = self.found_but_scan_bounded()
+        b.orders = [o for o in b.orders if not o["client_order_id"].startswith("foreign")]
+        gw.recover_pending()
+        self.assertEqual(state(db, "r3b-u"), "ACCEPTED")
+        self.assertFalse(gw.entries_locked()[0])
+        self.assertNotIn("r3b-u", queued(db))
+
+    def test_later_scan_finding_duplicate_is_conflict(self):
+        b, c, gw, clk, db, r = self.found_but_scan_bounded()
+        b.orders = [o for o in b.orders if not o["client_order_id"].startswith("foreign")]
+        b.add_duplicate_of("r3b-u", {"qty": 0.0002, "type": "limit", "side": "sell",
+                                     "time_in_force": "ioc", "limit_price": 100000})
+        gw.recover_pending()
+        self.assertEqual(state(db, "r3b-u"), "CONFLICT")
+        self.assertTrue(gw.entries_locked()[0])
+
+    def test_unverified_order_cannot_be_abandoned(self):
+        b, c, gw, clk, db, r = self.found_but_scan_bounded()
+        gw.abandon("r3b-u", operator="op", note="n")
+        self.assertNotEqual(state(db, "r3b-u"), "ABANDONED")
+        self.assertTrue(gw.entries_locked()[0])
+
+
+class C_Races(unittest.TestCase):
+    def test_abandon_racing_newly_discovered_order(self):
+        """Abandon's fresh check sees nothing; before its write, another caller discovers the
+        order and records it. Abandon must not overwrite; lock must reflect the order."""
+        b, c, gw, clk, db = make3b()
+        b.post = [("accept_then", 504, T.J504)]
+        b.hidden.add("r3b-c1")
+        gw.submit(T.req("r3b-c1"), "test")
+        gw2 = gateway(c, db, clk)
+        real = gw.store.operator_action
+
+        def racing(*a, **k):
+            b.hidden.discard("r3b-c1")
+            gw2.reconcile("r3b-c1")                     # concurrent discovery lands first
+            return real(*a, **k)
+        gw.store.operator_action = racing
+        r = gw.abandon("r3b-c1", operator="op", note="n")
+        self.assertIn(state(db, "r3b-c1"), ("ACCEPTED", "ACCEPTED_UNVERIFIED"))
+        self.assertNotIn("ABANDONED", kinds(gw, "r3b-c1"))
+        self.assertNotEqual(r.state, "ABANDONED")
+
+    def test_release_racing_late_order(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-c2")
+        gw.abandon("r3b-c2", operator="op", note="n")
+        gw2 = gateway(c, db, clk)
+        real = gw.store.operator_action
+
+        def racing(*a, **k):
+            b.add_duplicate_of("r3b-c2", {"qty": 0.0002, "type": "limit", "side": "sell",
+                                          "time_in_force": "ioc", "limit_price": 100000})
+            gw2.reconcile("r3b-c2")                     # late order -> CONFLICT lands first
+            return real(*a, **k)
+        gw.store.operator_action = racing
+        gw.release_entry_lock("r3b-c2", operator="op", note="n")
+        self.assertEqual(state(db, "r3b-c2"), "CONFLICT")
+        self.assertTrue(gw.entries_locked()[0])
+        self.assertNotIn("LOCK_RELEASED", kinds(gw, "r3b-c2"))
+
+    def test_abandon_operator_write_failure_keeps_state_and_lock(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-c3")
+
+        def fail(op):
+            if op == "op_ABANDONED":
+                raise T.sqlite_error()
+        gw.store.fail_hook = fail
+        r = gw.abandon("r3b-c3", operator="op", note="n")
+        gw.store.fail_hook = None
+        self.assertEqual(state(db, "r3b-c3"), "UNRESOLVED")
+        self.assertIs(r.persisted, False)
+        self.assertTrue(gw.entries_locked()[0])
+
+
+class D_PaginationDuringHumanChecks(unittest.TestCase):
+    def test_page_failure_refuses_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-d1")
+        b.add_foreign(1200)
+        b.fail_pages = set(range(b.list_calls + 2, b.list_calls + 40))
+        gw.abandon("r3b-d1", operator="op", note="n")
+        self.assertEqual(state(db, "r3b-d1"), "UNRESOLVED")
+
+    def test_page_bound_refuses_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-d2")
+        b.add_foreign(5000)
+        gw.abandon("r3b-d2", operator="op", note="n")
+        self.assertEqual(state(db, "r3b-d2"), "UNRESOLVED")
+
+    def test_stuck_pagination_refuses_abandon(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-d3")
+        b.stuck = True
+        gw.abandon("r3b-d3", operator="op", note="n")
+        self.assertEqual(state(db, "r3b-d3"), "UNRESOLVED")
+
+    def test_page_failure_refuses_release(self):
+        b, c, gw, clk, db = unresolved_never_sent(cid="r3b-d4")
+        gw.abandon("r3b-d4", operator="op", note="n")
+        b.add_foreign(1200)
+        b.fail_pages = set(range(b.list_calls + 2, b.list_calls + 40))
+        gw.release_entry_lock("r3b-d4", operator="op", note="n")
+        self.assertTrue(gw.entries_locked()[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
