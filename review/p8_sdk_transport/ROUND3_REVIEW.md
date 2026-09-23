@@ -1,5 +1,8 @@
 # P8 wrapper — Round 3: unreadable history, identity, duplicates, pagination, human resolution
 
+> **Status update (round 3b):** the human-resolution policy below remains **UNAPPROVED**. Its 24 h / 1 h waits are unvalidated proposals, are **not implemented**, and are not evidence of absence. Abandon/release now also require a persisted `NEGATIVE_COMPLETE` fresh check. `ACCEPTED` with unverified uniqueness is now `ACCEPTED_UNVERIFIED` (monitored, locked). See `ROUND3B_REVIEW.md`.
+
+
 - **Branch:** `review/p8-sdk-wrapper` · Offline only; nothing wired into any bot or deployed.
 - **Commits:**
   - `a15ade0` — tests only

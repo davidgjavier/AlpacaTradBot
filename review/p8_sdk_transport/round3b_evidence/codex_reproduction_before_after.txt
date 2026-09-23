@@ -1,0 +1,3 @@
+# Codex reviewer_reproduction.py (sha256 4de046470390e4db), run verbatim
+BEFORE (83ef87c): abandon=ABANDONED locked_before=true release=ABANDONED locked_after=false
+AFTER (fix): {"abandon_state":"UNRESOLVED","locked_before_release":true,"release_state":"UNRESOLVED","locked_after_release":true,"broker_reads":"allfailed"}

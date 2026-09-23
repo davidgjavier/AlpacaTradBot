@@ -216,12 +216,17 @@ INTENT_MIGRATIONS = [("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER")
 #   ABANDONED   operator declared the intent abandoned; STILL monitored for a late order;
 #               entries stay locked until a separate, explicit release_entry_lock()
 # Transitions are compare-and-set and every one appends to intent_events (history is never erased).
-PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW", "CONFLICT", "ABANDONED")
+#   ACCEPTED_UNVERIFIED (round 3b)  one identity-matching broker order is known, but a COMPLETE
+#               bounded scan has not yet confirmed it is the only order for the client id.
+#               Monitored; entries locked; re-scanned every cycle; persists across restarts.
+PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW", "CONFLICT", "ABANDONED",
+                  "ACCEPTED_UNVERIFIED")
 _OPEN = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")
-_ALLOWED_FROM = {"ACCEPTED": _OPEN,
+_ALLOWED_FROM = {"ACCEPTED": _OPEN + ("ACCEPTED_UNVERIFIED",),
+                 "ACCEPTED_UNVERIFIED": _OPEN + ("ACCEPTED_UNVERIFIED",),
                  "REJECTED": ("SUBMITTING",),
                  "UNRESOLVED": _OPEN,
-                 "CONFLICT": _OPEN + ("ABANDONED",),
+                 "CONFLICT": _OPEN + ("ABANDONED", "ACCEPTED_UNVERIFIED"),
                  "ABANDONED": ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")}
 
 
@@ -284,7 +289,7 @@ class IntentStore:
         with closing(self._c()) as c:
             return [r[0] for r in c.execute(
                 "SELECT client_order_id FROM order_intents WHERE symbol=? AND ("
-                " state IN ('SUBMITTING','UNRESOLVED','NOT_FOUND_AFTER_WINDOW','CONFLICT')"
+                " state IN ('SUBMITTING','UNRESOLVED','NOT_FOUND_AFTER_WINDOW','CONFLICT','ACCEPTED_UNVERIFIED')"
                 " OR (state='ABANDONED' AND lock_released_ns IS NULL))", (symbol,))]
 
     def events(self, cid: str) -> list:
@@ -323,7 +328,7 @@ class IntentStore:
                           " conflict_detail=COALESCE(?,conflict_detail)"
                           " WHERE client_order_id=? AND state IN (%s)%s" % (",".join("?" * len(src)), extra),
                           (to_state, order_id, error, now_ns, conflict_detail, cid) + src).rowcount
-            if n == 1 and (frm != to_state or to_state != "UNRESOLVED"):
+            if n == 1 and frm != to_state:          # same-state refreshes update the row, not history
                 self._event(c, cid, now_ns, "TRANSITION", frm, to_state, detail=conflict_detail or error)
             return n == 1
         return self._txn(f"mark_{to_state}", fn)
@@ -467,10 +472,17 @@ class SubmitResult:
     broker_order_ids: list = field(default_factory=list)
     mismatches: list = field(default_factory=list)
     uniqueness_verified: Optional[bool] = None
+    # Evidence quality of THIS call's broker check (round 3b):
+    #   POSITIVE           a broker order for the id was observed
+    #   NEGATIVE_COMPLETE  structured 404 on the by-id lookup AND a complete bounded scan with no match.
+    #                      A successful negative observation. Still NOT proof that exposure is absent.
+    #   INCOMPLETE         any read failed/unavailable, the scan was truncated, bounded, stuck or not run
+    #   NOT_CHECKED        no broker check was made (e.g. already terminal, or store unreadable)
+    evidence: str = "NOT_CHECKED"
 
     @property
     def exposure_may_exist(self) -> bool:
-        return self.state in ("ACCEPTED", "UNRESOLVED", "CONFLICT", "ABANDONED")
+        return self.state in ("ACCEPTED", "ACCEPTED_UNVERIFIED", "UNRESOLVED", "CONFLICT", "ABANDONED")
 
 
 class OrderGateway:
@@ -587,7 +599,7 @@ class OrderGateway:
                                 broker_order_ids=[oid], detail=detail, persisted=ok, persistence_error=perr)
         applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
         return SubmitResult("ACCEPTED", cid, order_id=oid, order=order, posts_this_call=1, broker_order_ids=[oid],
-                            persisted=ok, persistence_error=perr,
+                            persisted=ok, persistence_error=perr, evidence="POSITIVE",
                             detail="" if ok else "accepted; result NOT saved (row stays in recovery queue)")
 
     # ---------------------------------------------------------------- evidence
@@ -622,10 +634,14 @@ class OrderGateway:
             cursor = max(stamps) - timedelta(microseconds=1)
         return ScanResult(matches, False, f"page bound {self.scan_max_pages} reached", self.scan_max_pages)
 
-    def reconcile(self, cid) -> SubmitResult:
-        """Resolve an intent from broker evidence. Only POSITIVE, identity-matching evidence of
-        exactly one order resolves an open intent to ACCEPTED. Negative evidence never resolves
-        anything. CONFLICT and ABANDONED are re-checked (late orders) but never auto-cleared."""
+    def reconcile(self, cid, force_scan: bool = False) -> SubmitResult:
+        """Resolve an intent from broker evidence and report the evidence quality.
+
+        Only POSITIVE, identity-matching evidence of exactly one order moves an open intent forward:
+        to ACCEPTED if a COMPLETE bounded scan confirms uniqueness, else to ACCEPTED_UNVERIFIED
+        (still monitored and locked). Negative evidence never resolves anything. CONFLICT and
+        ABANDONED are re-checked (late orders) but never auto-cleared. force_scan=True runs the
+        bounded scan even inside the visibility window (human-resolution checks)."""
         row, err = self._row(cid)
         if err:
             return SubmitResult("UNRESOLVED", cid, detail=err, persisted=False, persistence_error=err)
@@ -641,15 +657,26 @@ class OrderGateway:
             how.append("found by client id")
         aged = self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) >= self.window_ns
         scan = None
-        if candidates or aged:                      # uniqueness check, or positive evidence after the window
+        if candidates or aged or force_scan or row["state"] == "ACCEPTED_UNVERIFIED":
             scan = self._scan(cid, row)
             for o in scan.matches:
                 if str(o.id) not in candidates:
                     candidates[str(o.id)] = o
                     if "found by list" not in how:
                         how.append("found by list")
-        ids = sorted(candidates)
+        if candidates:
+            evidence = "POSITIVE"
+        elif r.state == "NOT_FOUND" and scan is not None and scan.complete:
+            evidence = "NEGATIVE_COMPLETE"
+        else:
+            evidence = "INCOMPLETE"
         scan_note = f"scan: {scan.reason}, {scan.pages} page(s)" if scan else "scan: not run"
+        out = self._reconcile_decide(cid, row, intent, r, candidates, how, scan, scan_note)
+        out.evidence = evidence
+        return out
+
+    def _reconcile_decide(self, cid, row, intent, r, candidates, how, scan, scan_note) -> SubmitResult:
+        ids = sorted(candidates)
         if len(ids) > 1:
             return self._conflict(cid, row, f"{len(ids)} broker orders share this client id: {', '.join(ids)}",
                                   ids=ids)
@@ -662,16 +689,21 @@ class OrderGateway:
                 return self._conflict(cid, row, f"late order {ids[0]} appeared after abandonment", ids=ids)
             if row["state"] == "CONFLICT":
                 return self._from_row(cid, detail="conflict persists; human resolution required")
-            applied, ok, perr = self._record(cid, "ACCEPTED", order_id=ids[0])
-            if ok and not applied:
+            verified = bool(scan and scan.complete)
+            target = "ACCEPTED" if verified else "ACCEPTED_UNVERIFIED"
+            note = " + ".join(how) if len(how) == 1 else "; ".join(how)
+            if not verified:
+                note += f"; uniqueness NOT verified ({scan_note}); remains monitored and entries locked"
+            applied, ok, perr = self._record(cid, target, order_id=ids[0],
+                                             error=None if verified else note)
+            if ok and not applied and row["state"] != target:
                 return self._from_row(cid, detail="state changed concurrently")
-            uniq = scan.complete if scan and scan.complete is not None else None
-            return SubmitResult("ACCEPTED", cid, order_id=ids[0], order=o, broker_order_ids=ids,
-                                detail=" + ".join(how) if len(how) == 1 else "; ".join(how),
-                                uniqueness_verified=uniq, persisted=ok, persistence_error=perr)
+            return SubmitResult(target, cid, order_id=ids[0], order=o, broker_order_ids=ids, detail=note,
+                                uniqueness_verified=verified, persisted=ok, persistence_error=perr)
         # No positive evidence.
-        if row["state"] in ("CONFLICT", "ABANDONED"):
-            return self._from_row(cid, detail=f"no new broker evidence; still {row['state']} ({scan_note})")
+        if row["state"] in ("CONFLICT", "ABANDONED", "ACCEPTED_UNVERIFIED"):
+            return self._from_row(cid, detail=f"no new broker evidence; still {row['state']} "
+                                              f"(lookup {r.state}; {scan_note})")
         why = {"NOT_FOUND": "no broker evidence yet (NOT proof of absence)",
                "UNAVAILABLE": "lookup UNAVAILABLE", "ERROR": f"lookup ERROR: {r.error}"}.get(r.state, r.state)
         why = f"{why}; {scan_note}"
@@ -730,6 +762,17 @@ class OrderGateway:
         if not operator or not str(operator).strip() or not note or not str(note).strip():
             raise ValueError("operator and note are required for human-resolution actions")
 
+    @staticmethod
+    def _negative_check_refusal(fresh: SubmitResult) -> Optional[str]:
+        """Human-resolution actions need a SUCCESSFUL negative observation that was also recorded.
+        Unavailable, failed, truncated, bounded or stuck evidence is not a negative observation.
+        Even NEGATIVE_COMPLETE is only a precondition for an operator decision, not proof of absence."""
+        if fresh.evidence != "NEGATIVE_COMPLETE":
+            return f"broker evidence {fresh.evidence}, not a complete negative observation"
+        if not fresh.persisted:
+            return f"fresh check could not be persisted ({fresh.persistence_error})"
+        return None
+
     def acknowledge(self, cid, operator: str, note: str) -> SubmitResult:
         """Operator has SEEN the unresolved intent. Changes no state, releases no lock, stops no
         monitoring. Recorded in history."""
@@ -751,9 +794,13 @@ class OrderGateway:
         row, err = self._row(cid)
         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
-        fresh = self.reconcile(cid)
+        fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "UNRESOLVED":
             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+            return fresh
+        refusal = self._negative_check_refusal(fresh)
+        if refusal:
+            fresh.detail = f"abandon refused: {refusal}; {fresh.detail}"
             return fresh
         try:
             ok = self.store.operator_action(cid, "ABANDONED", operator, note, self.now_ns(),
@@ -773,9 +820,13 @@ class OrderGateway:
         row, err = self._row(cid)
         if err or row is None or row["state"] != "ABANDONED":
             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
-        fresh = self.reconcile(cid)
+        fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "ABANDONED":
             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
+            return fresh
+        refusal = self._negative_check_refusal(fresh)
+        if refusal:
+            fresh.detail = f"release refused (lock HELD): {refusal}; {fresh.detail}"
             return fresh
         try:
             ok = self.store.operator_action(cid, "LOCK_RELEASED", operator, note, self.now_ns(),
