@@ -656,12 +656,17 @@ def verify_sell_filled(qty_before, timeout_s=5, poll_s=0.5):
     (0.0 if fully filled) — callers should keep tracking the position
     if this comes back > 0 rather than blindly clearing state, so a
     partial fill can't leave an untracked, unprotected residual."""
+    # Stage 3 (P0-2 remainder): an UNREADABLE position is not a fill. Only a
+    # confirmed read counts; if no read confirms anything, return None
+    # ("exit unconfirmed") so callers keep state and log no trade.
     deadline = time.time() + timeout_s
-    remaining = qty_before
+    remaining = None
     while time.time() < deadline:
-        remaining = get_position_qty()
-        if remaining <= 0.0001:
-            return 0.0
+        q = _position_qty_strict()
+        if q is not None:
+            if q <= 0.0001:
+                return 0.0
+            remaining = q
         time.sleep(poll_s)
     return remaining
 
@@ -727,7 +732,11 @@ def flatten_position(qty, stop_order_id, reason):
         order = place_market_sell(qty)
         log(f"FLATTENED — {reason}. Market sell submitted: id {order.id}")
         remaining = verify_sell_filled(qty)
-        if remaining > 0:
+        if remaining is None:
+            log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                "outcome. State preserved, no trade logged; next cycle re-checks.")
+            return "UNCONFIRMED"
+        elif remaining > 0:
             log(f"  Warning: {remaining} BTC still shows as held after the flatten sell — likely a partial fill. Re-establishing a protective stop on the residual rather than clearing state.")
             prior_entry = db.get_position_state(SYMBOL).get("entry_price") or 0
             try:
@@ -738,10 +747,13 @@ def flatten_position(qty, stop_order_id, reason):
                 current_price = prior_entry
             new_stop_id, new_stop_price = place_protective_stop(remaining, current_price)
             db.set_position_state(SYMBOL, entry_price=current_price, stop_order_id=new_stop_id, stop_price=new_stop_price, entry_strategy=entry_strategy)
+            return "PARTIAL"
         else:
             db.clear_position_state(SYMBOL)
+            return "FLAT"
     except Exception as e:
         log(f"  Flatten sell failed: {e}")
+        return "FAILED"
 
 
 # ---------- Daily loss circuit breaker ----------
@@ -1112,12 +1124,18 @@ def main():
                     f"Daily loss limit hit (P/L ${today_pl:.2f}) — flattening BTC "
                     f"position and halting new buys until tomorrow (UTC)."
                 )
+                outcome = "FLAT"
                 if qty > 0:
-                    flatten_position(
+                    outcome = flatten_position(
                         qty, pos_state.get("stop_order_id"),
                         f"circuit breaker (P/L ${today_pl:.2f})",
                     )
-                db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
+                # Stage 3: an unconfirmed or failed flatten must not mark the breaker as
+                # done for today; the next cycle retries the flatten.
+                if outcome in ("FLAT", "PARTIAL"):
+                    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
+                else:
+                    log(f"  Breaker flatten {outcome} — NOT marking today's breaker as done; retrying next cycle.")
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 
@@ -1172,7 +1190,11 @@ def main():
                     order = place_market_sell(qty)
                     log(f"  Emergency market sell submitted: id {order.id}")
                     remaining = verify_sell_filled(qty)
-                    if remaining > 0:
+                    if remaining is None:
+                        log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                            "outcome. State preserved, no trade logged; next cycle re-checks.")
+                        exit_unconfirmed = True
+                    elif remaining > 0:
                         log(f"  Warning: {remaining} BTC still held after the emergency sell — leaving position tracked for next cycle rather than clearing state.")
                         db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy=entry_strategy)
                     else:
@@ -1299,7 +1321,11 @@ def main():
                             order = place_market_sell(current_qty)
                             log(f"[STRATEGY: SCALP]  Order submitted: runner sell (trail breach) — id {order.id}")
                             remaining = verify_sell_filled(current_qty)
-                            if remaining > 0:
+                            if remaining is None:
+                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
+                                exit_unconfirmed = True
+                            elif remaining > 0:
                                 log(f"[STRATEGY: SCALP]  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None,
                                                        entry_time=entry_time, peak_price=peak, entry_strategy="SCALP",
@@ -1353,7 +1379,11 @@ def main():
                         order = place_market_sell(qty)
                         log(f"  Order submitted: BTC sell (time-decay) — id {order.id}")
                         remaining = verify_sell_filled(qty)
-                        if remaining > 0:
+                        if remaining is None:
+                            log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                                "outcome. State preserved, no trade logged; next cycle re-checks.")
+                            exit_unconfirmed = True
+                        elif remaining > 0:
                             log(f"  Warning: {remaining} BTC still held after time-decay sell — leaving position tracked for next cycle rather than clearing state.")
                             db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
                         else:
@@ -1447,7 +1477,11 @@ def main():
                             order = place_market_sell(qty)
                             log(f"  Order submitted: BTC sell (trail breach) — id {order.id}")
                             remaining = verify_sell_filled(qty)
-                            if remaining > 0:
+                            if remaining is None:
+                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
+                                exit_unconfirmed = True
+                            elif remaining > 0:
                                 log(f"  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
                             else:
@@ -1560,7 +1594,11 @@ def main():
                             order = place_market_sell(qty)
                             log(f"  Order submitted automatically: BTC sell — id {order.id}")
                             remaining = verify_sell_filled(qty)
-                            if remaining > 0:
+                            if remaining is None:
+                                log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
+                                    "outcome. State preserved, no trade logged; next cycle re-checks.")
+                                exit_unconfirmed = True
+                            elif remaining > 0:
                                 log(f"  Warning: {remaining} BTC still held after the sell — likely a partial fill. Leaving position tracked for next cycle's reconciliation rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=pos_state.get("entry_price"), stop_order_id=None, stop_price=None, entry_time=pos_state.get("entry_time"), peak_price=pos_state.get("peak_price"), entry_strategy="TREND")
                             else:

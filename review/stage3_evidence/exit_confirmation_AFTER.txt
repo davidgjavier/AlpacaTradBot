@@ -1,0 +1,9 @@
+test_confirmed_flatten_marks_breaker_control (test_stage3_exit_confirmation.CircuitBreaker) ... ok
+test_unconfirmed_flatten_does_not_mark_breaker_done_or_clear_state (test_stage3_exit_confirmation.CircuitBreaker) ... ok
+test_confirmed_emergency_sell_logs_and_clears_control (test_stage3_exit_confirmation.EmergencyExit) ... ok
+test_unconfirmed_emergency_sell_logs_no_trade_and_keeps_state (test_stage3_exit_confirmation.EmergencyExit) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.059s
+
+OK
