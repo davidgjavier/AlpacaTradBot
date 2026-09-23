@@ -13,6 +13,7 @@ connection — no long-held connections across the 5-minute bot loop,
 no explicit file locking needed beyond WAL + a busy_timeout.
 """
 
+import json
 import sqlite3
 import math
 from pathlib import Path
@@ -124,6 +125,13 @@ def init_db():
             conn.execute("ALTER TABLE equity_baseline ADD COLUMN eod_flattened_stamp TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists — this file predates it
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidation_state (
+                symbol TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                updated_ts TEXT
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS activity_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -582,3 +590,23 @@ def get_recent_activity(symbol=None, limit=20):
 
 
 init_db()
+
+
+# ---------- Stage 5: persisted breaker liquidation (additive table) ----------
+def get_liquidation_state(symbol):
+    with db_conn() as conn:
+        row = conn.execute("SELECT data FROM liquidation_state WHERE symbol=?", (symbol,)).fetchone()
+    return json.loads(row[0]) if row else {}
+
+
+def set_liquidation_state(symbol, **fields):
+    """Full overwrite (same semantics as set_position_state)."""
+    with db_conn() as conn:
+        conn.execute("INSERT INTO liquidation_state (symbol, data, updated_ts) VALUES (?, ?, ?) "
+                     "ON CONFLICT(symbol) DO UPDATE SET data=excluded.data, updated_ts=excluded.updated_ts",
+                     (symbol, json.dumps(fields, sort_keys=True), datetime.now(timezone.utc).isoformat()))
+
+
+def clear_liquidation_state(symbol):
+    with db_conn() as conn:
+        conn.execute("DELETE FROM liquidation_state WHERE symbol=?", (symbol,))

@@ -1,0 +1,12 @@
+Identical harness (+3 additive MemoryDB liquidation methods), only bot sources swapped.
+counts 96b2f74: {'PASS': 10, 'FAIL': 26, 'SENSITIVITY': 1, 'HARNESS_ERROR': 1}
+counts stage5 : {'PASS': 10, 'FAIL': 26, 'SENSITIVITY': 1, 'HARNESS_ERROR': 1}
+CHANGED (96b2f74 -> stage5):
+
+NOTE: an unpatched run of the original harness shows stage5 FAIL 16 / HARNESS_ERROR 13 -- that is NOT an improvement:
+the audit's MemoryDB lacks get_liquidation_state, so 12 tests crashed. The table above uses the identical
+additive fixture (3 methods) for BOTH runs: 10 PASS / 26 FAIL on both, no changes.
+
+'Breaker must retry residual liquidation' stays FAIL: (1) it counts flatten_position() calls, which the breaker no longer
+uses; (2) its pre-state (breaker already marked + residual + no pending liquidation) can no longer be CREATED by the fixed
+code, but can exist in DBs written by the pre-fix code -> cutover/legacy handling = D10 dependency (not chosen here).

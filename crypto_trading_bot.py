@@ -659,14 +659,16 @@ def verify_sell_filled(qty_before, timeout_s=5, poll_s=0.5):
     # Stage 3 (P0-2 remainder): an UNREADABLE position is not a fill. Only a
     # confirmed read counts; if no read confirms anything, return None
     # ("exit unconfirmed") so callers keep state and log no trade.
+    # Stage 5: ONLY the LATEST read counts. A successful read followed by a failed
+    # read is UNKNOWN (None), never the earlier (stale) quantity -- a stale residual
+    # must not size a protective stop or another exit order.
     deadline = time.time() + timeout_s
     remaining = None
     while time.time() < deadline:
         q = _position_qty_strict()
-        if q is not None:
-            if q <= 0.0001:
-                return 0.0
-            remaining = q
+        if q is not None and q <= 0.0001:
+            return 0.0
+        remaining = q                       # None when this read failed: invalidates earlier reads
         time.sleep(poll_s)
     return remaining
 
@@ -754,6 +756,108 @@ def flatten_position(qty, stop_order_id, reason):
     except Exception as e:
         log(f"  Flatten sell failed: {e}")
         return "FAILED"
+
+
+# ---------- Stage 5: persisted breaker liquidation ----------
+# A breaker flatten is a LIQUIDATION that stays pending (db liquidation_state) until a
+# strict position read CONFIRMS flat. Each cycle, before any other position logic and
+# regardless of the day's breaker status: reconcile our own last liquidation sell (by id,
+# or by deterministic client id if the id write was lost) -> if it can still execute or
+# its state is unknown, WAIT (never repeat a sell) -> confirm every other open sell is
+# cancelled (they reserve quantity) -> persist the intent -> sell exactly the quantity
+# confirmed THIS cycle -> bounded in-cycle confirmation. New entries are blocked while
+# pending. Flat uses the existing 0.0001 BTC threshold (verify_sell_filled).
+#
+# Protection gap -- stated accurately: while liquidating, the residual has NO resting
+# protective stop (stops are cancelled so the sell is not rejected for reserved balance).
+# Exposure is bounded by the working sell or the next cycle's re-sell. If position reads
+# keep failing, nothing is sold or protected until a read succeeds: sizing any order
+# without a confirmed quantity is exactly what this stage forbids, and choosing a
+# different unknown-quantity policy is pending decision D8.
+LIQ_FLAT_BTC = 0.0001
+
+
+def _open_sell_orders_strict():
+    """Open SELL orders for SYMBOL, or None if the broker's answer is unknown."""
+    try:
+        orders = trading_client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
+    except Exception:
+        return None
+    out = []
+    for o in orders:
+        side = o.side.value if hasattr(o.side, "value") else str(o.side)
+        if side == "sell":
+            out.append(o)
+    return out
+
+
+def _complete_liquidation(liq, qty):
+    log(f"LIQUIDATION COMPLETE — flat confirmed by a strict position read (qty {qty}). "
+        f"Reason: {liq.get('reason')}; {liq.get('attempt', 0)} sell attempt(s).")
+    db.clear_position_state(SYMBOL)
+    db.clear_liquidation_state(SYMBOL)
+    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, liq.get("day_stamp"))
+    return "FLAT"
+
+
+def _liquidation_step(qty, reason=None, day_stamp=None):
+    """One reconcile-then-act step. qty is THIS cycle's confirmed strict read (never None).
+    Returns "FLAT" (confirmed, completed) or "PENDING"."""
+    liq = db.get_liquidation_state(SYMBOL) or {}
+    if not liq:
+        liq = {"reason": reason, "day_stamp": day_stamp, "attempt": 0, "order_id": None,
+               "client_order_id": None, "started": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")}
+        db.set_liquidation_state(SYMBOL, **liq)
+    if qty <= LIQ_FLAT_BTC:
+        return _complete_liquidation(liq, qty)
+    # 1. Reconcile our own last liquidation sell.
+    ref = liq.get("order_id") or (("cid:" + liq["client_order_id"]) if liq.get("client_order_id") else None)
+    if ref:
+        fs = get_order_fill_state(ref)
+        if fs["state"] == "OPEN":
+            log(f"  Liquidation sell {ref} still working (filled {fs.get('filled_qty')}) — waiting; no repeat sell.")
+            return "PENDING"
+        if fs["state"] == "UNKNOWN":
+            log(f"  Liquidation sell {ref} state UNKNOWN — waiting to reconcile; no repeat sell.")
+            return "PENDING"
+        if fs["state"] == "NOT_FOUND" and liq.get("order_id"):
+            log(f"  Liquidation sell {ref} not found by id — waiting to reconcile; no repeat sell.")
+            return "PENDING"
+    # 2. Other open sells reserve quantity: cancel, then CONFIRM they are gone.
+    opens = _open_sell_orders_strict()
+    if opens is None:
+        log("  Open orders UNKNOWN — not selling this cycle.")
+        return "PENDING"
+    if opens:
+        for o in opens:
+            cancel_order_if_open(str(o.id))
+        still = _open_sell_orders_strict()
+        if still is None or still:
+            log("  Could not confirm open sell orders cancelled — not selling this cycle.")
+            return "PENDING"
+    # 3. Persist intent BEFORE submitting, then sell exactly the confirmed quantity.
+    attempt = int(liq.get("attempt") or 0) + 1
+    cid = f"liq-{liq.get('started')}-{attempt}"
+    liq.update(attempt=attempt, client_order_id=cid, order_id=None, last_confirmed_qty=qty)
+    db.set_liquidation_state(SYMBOL, **liq)
+    sell_qty = _floor_qty(qty)
+    try:
+        order = trading_client.submit_order(MarketOrderRequest(
+            symbol=SYMBOL, qty=sell_qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC,
+            client_order_id=cid))
+    except Exception as e:
+        log(f"  Liquidation sell attempt {attempt} submit failed/unknown ({e}); reconciling by client id next cycle.")
+        return "PENDING"
+    liq["order_id"] = str(order.id)
+    db.set_liquidation_state(SYMBOL, **liq)
+    log(f"LIQUIDATION sell attempt {attempt}: {sell_qty} BTC (confirmed this cycle) — id {order.id}")
+    # 4. Bounded in-cycle confirmation (latest read only).
+    remaining = verify_sell_filled(sell_qty)
+    if remaining == 0.0:
+        return _complete_liquidation(liq, 0.0)
+    log(f"  Liquidation still PENDING (latest read: {'UNKNOWN' if remaining is None else remaining}); "
+        "breaker NOT marked done; new entries blocked; next cycle reconciles before acting.")
+    return "PENDING"
 
 
 # ---------- Daily loss circuit breaker ----------
@@ -1118,24 +1222,26 @@ def main():
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 
+        # Stage 5: a pending liquidation takes precedence over everything else (including
+        # a new UTC day, when the breaker itself is no longer tripped) and blocks entries.
+        if db.get_liquidation_state(SYMBOL):
+            log("LIQUIDATION PENDING — reconciling before any other action; new entries blocked.")
+            _liquidation_step(qty)
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
+
         if circuit_breaker_tripped:
             if not already_flattened_today:
                 log(
-                    f"Daily loss limit hit (P/L ${today_pl:.2f}) — flattening BTC "
+                    f"Daily loss limit hit (P/L ${today_pl:.2f}) — liquidating BTC "
                     f"position and halting new buys until tomorrow (UTC)."
                 )
-                outcome = "FLAT"
-                if qty > 0:
-                    outcome = flatten_position(
-                        qty, pos_state.get("stop_order_id"),
-                        f"circuit breaker (P/L ${today_pl:.2f})",
-                    )
-                # Stage 3: an unconfirmed or failed flatten must not mark the breaker as
-                # done for today; the next cycle retries the flatten.
-                if outcome in ("FLAT", "PARTIAL"):
-                    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
+                if qty > LIQ_FLAT_BTC:
+                    # Breaker is marked done ONLY when flat is confirmed (inside
+                    # _liquidation_step); PARTIAL/UNCONFIRMED/FAILED stay pending.
+                    _liquidation_step(qty, reason=f"circuit breaker (P/L ${today_pl:.2f})", day_stamp=today_stamp)
                 else:
-                    log(f"  Breaker flatten {outcome} — NOT marking today's breaker as done; retrying next cycle.")
+                    db.mark_breaker_tripped(EQUITY_BASELINE_KEY, today_stamp)
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 

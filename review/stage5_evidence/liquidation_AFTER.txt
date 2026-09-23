@@ -1,0 +1,18 @@
+test_each_resell_is_sized_from_a_confirmed_read_of_that_cycle (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_partial_flatten_keeps_liquidation_pending_until_flat (test_stage5_liquidation.A_PartialAcrossCycles) ... ok
+test_other_open_sells_are_cancelled_and_confirmed_before_reselling (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_working_sell_is_reconciled_not_repeated (test_stage5_liquidation.B_OutstandingExitOrder) ... ok
+test_pending_liquidation_survives_restart (test_stage5_liquidation.C_RestartRecovery) ... ok
+test_restart_after_submit_before_id_persisted_does_not_double_sell (test_stage5_liquidation.C_RestartRecovery)
+Crash between submitting the liquidation sell and recording its id: the order is found by its ... ok
+test_eventual_confirmed_flat_after_failures_completes (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_stale_read_does_not_size_a_protective_stop_after_partial (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_success_then_failed_read_is_not_a_quantity (test_stage5_liquidation.D_IntermittentPositionReads)
+verify_sell_filled: a good read (0.3) followed only by failures must return UNKNOWN (None). ... ok
+test_unreadable_position_while_pending_takes_no_action_and_no_entry (test_stage5_liquidation.D_IntermittentPositionReads) ... ok
+test_liquidation_continues_after_day_rollover_and_blocks_entries (test_stage5_liquidation.E_DayRollover) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.191s
+
+OK
