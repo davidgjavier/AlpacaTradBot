@@ -1,0 +1,13 @@
+total tests: 91
+SAFETY_PASS                              85
+CHANGED_EXPECTATION_FAILS_AS_PREDICTED   4
+RISK_DEMO_NO_LONGER_REPRODUCES           1
+KNOWN_CONFLICT_FAILS_AS_PREDICTED        1
+SKIPPED                                  0
+UNEXPECTED                               0
+  [CHANGED_EXPECTATION_FAILS_AS_PREDICTED] test_draft_r1v2.G4_OperatorRecovery.test_valid_not_placed_resolution_authorizes_exactly_one_new_attempt -> fail
+  [CHANGED_EXPECTATION_FAILS_AS_PREDICTED] test_draft_r1v2_resolution.E_ReplayCrashRejection.test_authorization_is_exactly_once_and_cannot_be_reused -> fail
+  [CHANGED_EXPECTATION_FAILS_AS_PREDICTED] test_draft_r1v2_resolution.E_ReplayCrashRejection.test_crash_after_applying_resolution_yields_exactly_one_new_attempt -> fail
+  [CHANGED_EXPECTATION_FAILS_AS_PREDICTED] test_draft_r1v2_resolution.E_ReplayCrashRejection.test_rejected_resolution_stays_rejected_and_history_is_preserved -> fail
+  [RISK_DEMO_NO_LONGER_REPRODUCES] test_draft_r1v2_resolution.R_DocumentedRisk.test_RISK_not_placed_on_hidden_accepted_order_double_submits_and_completes -> fail
+  [KNOWN_CONFLICT_FAILS_AS_PREDICTED] test_stage5c_latch_and_crash.C_CrashWindows.test_intent_persisted_but_never_sent_is_resubmitted_once -> fail

@@ -1,0 +1,21 @@
+test_bound_not_placed_assertion_is_rejected_no_second_sell (test_candidate_opt1.A_HiddenAcceptedOriginal)
+Inverse of the frozen draft's documented risk (R_DocumentedRisk). ... ok
+test_no_second_sell_no_false_completion_ever (test_candidate_opt1.A_HiddenAcceptedOriginal) ... ok
+test_remains_pending_blocks_entries_and_exposes_status (test_candidate_opt1.B_IntentSavedNeverSent) ... ok
+test_flat_with_hidden_attempt_is_not_reconciled (test_candidate_opt1.C_ZeroPositionUnknownOrder) ... ok
+test_flat_with_never_sent_attempt_is_not_reconciled (test_candidate_opt1.C_ZeroPositionUnknownOrder) ... ok
+test_canceled_unfilled_resells_once_on_positive_terminal_evidence (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_filled (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_partially_filled_still_working (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_partially_filled_then_canceled_sells_only_the_remainder_once (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_rejected_resells_once_on_positive_terminal_evidence (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_working (test_candidate_opt1.D_OriginalLaterAppears) ... ok
+test_every_unresolved_state (test_candidate_opt1.E_RestartAndDayRollover) ... ok
+test_position_open_orders_and_lookup_failures_take_no_action_then_recover (test_candidate_opt1.F_ReadFailuresDuringRecovery) ... ok
+test_manual_flatten_then_original_reported_rejected_resolves_without_a_new_sell (test_candidate_opt1.G_LateOriginalFillAfterInvestigation) ... ok
+test_operator_assertion_rejected_then_late_fill_completes_with_one_sell (test_candidate_opt1.G_LateOriginalFillAfterInvestigation) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.413s
+
+OK
