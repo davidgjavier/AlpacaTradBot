@@ -1,0 +1,17 @@
+# test_p8_round4 vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
+test_read_never_exceeds_wall_clock_budget_on_a_hung_call (test_p8_round4.A_ReadBudget) ... ok
+test_retry_backoff_is_truncated_to_the_remaining_budget (test_p8_round4.A_ReadBudget) ... ok
+test_slow_drip_socket_is_bounded_by_the_caller_deadline (test_p8_round4.A_ReadBudget)
+Real loopback server: headers, then 1 body byte every 0.2 s forever. The socket read ... ok
+test_deadline_exceeded_after_acceptance_is_unresolved_not_not_submitted (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
+test_late_response_never_mutates_state_out_of_order (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
+test_lookup_hang_inside_reconcile_is_bounded (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
+test_post_never_reaches_broker_before_deadline_is_unresolved_one_post (test_p8_round4.B_SubmitDeadlineAndLateCompletion) ... ok
+test_saturated_workers_fail_closed_without_posting (test_p8_round4.C_BoundedWorkers) ... ok
+test_abandon_allowed_again_once_the_worker_has_finished (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
+test_abandon_refused_while_this_process_still_has_the_post_in_flight (test_p8_round4.D_Integration_InflightSubmitVsHumanResolution) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 8.688s
+
+OK

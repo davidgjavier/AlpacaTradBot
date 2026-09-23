@@ -1,0 +1,4 @@
+# Codex reviewer_checks.py (sha256 9fa2f8753f8efe38) run verbatim vs stage-2b fix
+{"case": "same-process second gateway", "original_post_inflight": true, "second_gateway_abandon": "UNRESOLVED", "entry_lock_after_release": true}
+{"late_broker_orders": 1, "posts": 1}
+{"case": "submit budget plus reconciliation", "configured_submit_deadline": 0.05, "elapsed_seconds": 0.016, "state": "UNRESOLVED"}

@@ -1,0 +1,24 @@
+# test_p8_stage2b vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
+test_completion_bookkeeping_failure_keeps_ownership_conservative (test_p8_stage2b.A_OwnershipAcrossGateways)
+If the worker cannot record that its request finished, the id must stay 'in flight'. ... ok
+test_second_gateway_cannot_abandon_or_release_while_post_in_flight (test_p8_stage2b.A_OwnershipAcrossGateways)
+Codex reviewer_checks.py case 1, as assertions. ... ok
+test_other_process_cannot_abandon_while_owner_post_in_flight (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... /Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=7>
+  method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/case.py:550: ResourceWarning: unclosed file <_io.BufferedReader name=9>
+  method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_owner_crash_preserves_uncertainty (test_p8_stage2b.B_OwnershipAcrossProcessesAndCrashes) ... ok
+test_budget_covers_slow_reconcile_after_fast_ambiguous_post (test_p8_stage2b.C_EndToEndSubmitBudget) ... ok
+test_codex_case_budget_covers_reconciliation (test_p8_stage2b.C_EndToEndSubmitBudget)
+Codex reviewer_checks.py case 2, as an assertion. ... ok
+test_database_lock_wait_counts_against_budget (test_p8_stage2b.C_EndToEndSubmitBudget)
+Another connection holds the write lock after the POST; the post-POST record must not ... ok
+test_default_gateway_never_releases_the_entry_lock (test_p8_stage2b.D_LockReleaseDisabledByDefault) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 5.416s
+
+OK

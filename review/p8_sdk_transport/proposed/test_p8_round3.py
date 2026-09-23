@@ -85,6 +85,7 @@ def make3(db=None):
     clock.t = T0.timestamp()                    # align gateway clock with broker timestamps
     db = db or os.path.join(tempfile.mkdtemp(), "intents.db")
     gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
     return broker, client, gw, clock, db
 
 

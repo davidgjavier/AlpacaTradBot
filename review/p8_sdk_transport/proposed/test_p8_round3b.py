@@ -48,11 +48,14 @@ def make3b(db=None):
     import os, tempfile
     db = db or os.path.join(tempfile.mkdtemp(), "intents.db")
     gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
     return broker, client, gw, clock, db
 
 
 def gateway(client, db, clock):
-    return B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw = B.OrderGateway(client, B.IntentStore(db), "BTC/USD", now_ns=clock.ns, read_kw=T.fast_read_kw(clock))
+    gw.lock_release_enabled = True   # CHANGED (stage 2b): mechanism tests opt in; operational default is disabled
+    return gw
 
 
 def unresolved_never_sent(maker=make3b, cid="r3b"):

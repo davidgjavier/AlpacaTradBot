@@ -1,0 +1,25 @@
+# test_p8_round2 vs STAGE-2b FIX, 2026-09-23 09:37 AM PDT
+test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
+test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
+Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
+test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
+Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
+test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
+Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
+test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
+test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
+Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
+test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
+test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
+test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
+test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
+test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
+test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
+test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
+test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
+test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.528s
+
+OK

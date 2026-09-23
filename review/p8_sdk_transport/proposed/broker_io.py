@@ -49,6 +49,12 @@ DEFAULT_TIMEOUT = (3.05, 10.0)          # (connect, read) seconds — proposal, 
 READ_DEADLINE_S = 8.0                   # WALL-CLOCK budget for one logical read incl. retries (stage 2)
 SUBMIT_DEADLINE_S = 15.0                # WALL-CLOCK budget the caller waits for the single POST (stage 2)
 MAX_INFLIGHT_CALLS = 8                  # bound on worker threads (incl. ones abandoned at a deadline)
+# Stage 2b: SUBMIT_DEADLINE_S is the END-TO-END budget of submit(): POST wait + DB writes + any
+# reconcile reads/scan. When it runs out the call returns UNRESOLVED and reconciliation is deferred.
+FINAL_WRITE_RESERVE_S = 0.05            # budget kept back for the final state write
+SCHED_MARGIN_S = 0.01                   # thread start / wake-up overhead
+DB_BUSY_TIMEOUT_S = 5.0                 # sqlite busy timeout when no budget applies (was 10 s)
+LOCK_RELEASE_ENABLED = False            # operational lock release OFF until mechanism + policy approved
 READ_MAX_ATTEMPTS = 5
 VISIBILITY_WINDOW_S = 30.0              # before "not found" may be treated as absence (UNVERIFIED value)
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
@@ -173,7 +179,7 @@ class CallRunner:
             self.inflight -= 1
 
     def run_reserved(self, fn: Callable[[], Any], timeout_s: float,
-                     on_done: Optional[Callable[[], None]] = None) -> CallOutcome:
+                     on_done: Optional[Callable[[Any, Optional[BaseException]], None]] = None) -> CallOutcome:
         """on_done runs in the WORKER when the request actually finishes (even after the caller
         gave up), so callers can track what is still in flight. It must not write intent state."""
         box, done, flag = {}, threading.Event(), {"abandoned": False}
@@ -186,7 +192,7 @@ class CallRunner:
             finally:
                 if on_done:
                     try:
-                        on_done()
+                        on_done(box.get("v"), box.get("e"))
                     except Exception:  # noqa: BLE001
                         pass
                 with self._lock:
@@ -215,6 +221,17 @@ class CallRunner:
 
 
 DEFAULT_RUNNER = CallRunner()
+
+
+class Budget:
+    """One monotonic wall-clock budget carried through a complete operation (stage 2b)."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.deadline = time.monotonic() + seconds
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
 
 
 @dataclass
@@ -303,7 +320,9 @@ CREATE TABLE IF NOT EXISTS intent_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, client_order_id TEXT NOT NULL, ts_ns INTEGER NOT NULL,
   kind TEXT NOT NULL, from_state TEXT, to_state TEXT, operator TEXT, note TEXT, detail TEXT);
 """
-INTENT_MIGRATIONS = [("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER"), ("abandoned_by", "TEXT"),
+INTENT_MIGRATIONS = [("post_inflight", "INTEGER NOT NULL DEFAULT 0"), ("post_started_ns", "INTEGER"),
+                     ("post_finished_ns", "INTEGER"), ("post_result", "TEXT"),
+                     ("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER"), ("abandoned_by", "TEXT"),
                      ("abandoned_ns", "INTEGER"), ("lock_released_by", "TEXT"), ("lock_released_ns", "INTEGER"),
                      ("conflict_detail", "TEXT")]
 # States (round 3):
@@ -331,8 +350,10 @@ _ALLOWED_FROM = {"ACCEPTED": _OPEN + ("ACCEPTED_UNVERIFIED",),
 
 
 class IntentStore:
-    def __init__(self, path: str, fail_hook: Optional[Callable[[str], None]] = None):
-        self.path, self.fail_hook = path, fail_hook
+    def __init__(self, path: str, fail_hook: Optional[Callable[[str], None]] = None,
+                 busy_timeout_s: float = DB_BUSY_TIMEOUT_S):
+        self.path, self.fail_hook, self.busy_timeout_s = path, fail_hook, busy_timeout_s
+        self._tl = threading.local()               # per-thread busy-timeout override (budgeted callers)
         with closing(self._c()) as c:
             c.executescript(INTENT_SCHEMA)
             have = {r[1] for r in c.execute("PRAGMA table_info(order_intents)")}
@@ -340,8 +361,23 @@ class IntentStore:
                 if name not in have:
                     c.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {typ}")
 
+    def bounded(self, timeout_s: Optional[float]):
+        """Context: cap sqlite busy waits for this thread's store calls (stage 2b)."""
+        store = self
+
+        class _Ctx:
+            def __enter__(self_):
+                self_.prev = getattr(store._tl, "timeout", None)
+                store._tl.timeout = timeout_s
+
+            def __exit__(self_, *a):
+                store._tl.timeout = self_.prev
+        return _Ctx()
+
     def _c(self):
-        c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        t = getattr(self._tl, "timeout", None)
+        t = self.busy_timeout_s if t is None else max(0.001, min(t, self.busy_timeout_s))
+        c = sqlite3.connect(self.path, timeout=t, isolation_level=None)
         c.execute("PRAGMA journal_mode=WAL")
         c.execute("PRAGMA synchronous=FULL")      # durable before we act on it
         return c
@@ -404,10 +440,13 @@ class IntentStore:
         pj = json.dumps(payload, sort_keys=True, default=str)
 
         def fn(c):
+            # post_inflight=1 in the SAME transaction: ownership is durable and visible to every
+            # gateway and process before any POST can start (stage 2b).
             c.execute("INSERT INTO order_intents (client_order_id,purpose,symbol,payload,payload_sha,state,"
-                      "submit_attempts,created_ns,last_submit_ns,updated_ns) VALUES (?,?,?,?,?,?,1,?,?,?)",
+                      "submit_attempts,created_ns,last_submit_ns,updated_ns,post_inflight,post_started_ns)"
+                      " VALUES (?,?,?,?,?,?,1,?,?,?,1,?)",
                       (cid, purpose, symbol, pj, hashlib.sha256(pj.encode()).hexdigest(), "SUBMITTING",
-                       now_ns, now_ns, now_ns))
+                       now_ns, now_ns, now_ns, now_ns))
             self._event(c, cid, now_ns, "CREATED", None, "SUBMITTING")
         try:
             self._txn("create_submitting", fn)
@@ -452,6 +491,19 @@ class IntentStore:
                 self._event(c, cid, now_ns, kind, frm, to, operator=operator, note=note)
             return n == 1
         return self._txn(f"op_{kind}", fn)
+
+    def mark_post_finished(self, cid, result: str, now_ns: int) -> bool:
+        """Called by the POST worker when its request actually ends (possibly after the caller left).
+        Bookkeeping only: clears post_inflight and records the transport outcome; never changes
+        `state`. If this write fails, post_inflight stays 1 (conservative)."""
+        def fn(c):
+            # Columns only: no history event, no `state`/`updated_ns` change. The stage-2 invariant is
+            # that a late response never mutates intent state or history; post_result is used only to
+            # BLOCK resolution (an 'ok:' outcome refuses abandon), never to advance state.
+            n = c.execute("UPDATE order_intents SET post_inflight=0, post_finished_ns=?, post_result=?"
+                          " WHERE client_order_id=?", (now_ns, result[:300], cid)).rowcount
+            return n == 1
+        return self._txn("post_finished", fn)
 
     def mark(self, cid, state, now_ns, order_id=None, error=None, bump_attempt=False):
         """Backwards-compatible alias; compare-and-set. Re-submission (attempt bumps) is disabled."""
@@ -598,17 +650,46 @@ class OrderGateway:
         self.scan_max_pages, self.scan_page_limit = scan_max_pages, scan_page_limit
         self.runner = CallRunner()                  # stage 2: bounded workers, wall-clock waits
         self.submit_deadline_s = SUBMIT_DEADLINE_S
-        self._inflight_lock = threading.Lock()
-        self._inflight_cids = set()                 # POSTs whose worker has not finished (process-local)
+        self.lock_release_enabled = LOCK_RELEASE_ENABLED   # stage 2b: operationally OFF by default
+        self._tl = threading.local()                       # current end-to-end Budget (per caller thread)
 
     def submit_in_flight(self, cid) -> bool:
-        with self._inflight_lock:
-            return cid in self._inflight_cids
+        """DURABLE ownership (stage 2b): true while the intent row says its POST has not finished,
+        whichever gateway/process sent it. Never expires; an owner crash leaves it true (uncertainty
+        preserved). Fail-closed: an unreadable row counts as in flight."""
+        row, err = self._row(cid)
+        if err:
+            return True
+        return bool(row and row.get("post_inflight"))
+
+    def _post_outcome_blocks_resolution(self, cid) -> Optional[str]:
+        row, err = self._row(cid)
+        if err:
+            return f"intent unreadable ({err})"
+        if row is None:
+            return None
+        if row.get("post_inflight"):
+            return "a POST for this id has not finished (any gateway/process; survives crashes)"
+        if (row.get("post_result") or "").startswith("ok:"):
+            return f"the POST for this id was accepted by the broker ({row['post_result']})"
+        return None
+
+    # ---- end-to-end budget helpers
+    def _budget(self) -> Optional[Budget]:
+        return getattr(self._tl, "budget", None)
+
+    def _db_timeout(self) -> Optional[float]:
+        b = self._budget()
+        return None if b is None else max(0.001, b.remaining() - SCHED_MARGIN_S)
 
     def _rk(self) -> dict:
         """read() kwargs with this gateway's runner (tests may replace self.runner at any time)."""
         kw = dict(self.read_kw)
         kw.setdefault("runner", self.runner)
+        b = self._budget()
+        if b is not None:                            # reads get only what the caller's budget allows
+            left = b.remaining() - FINAL_WRITE_RESERVE_S - SCHED_MARGIN_S
+            kw["deadline_s"] = min(kw.get("deadline_s", READ_DEADLINE_S), max(0.0, left))
         return kw
 
     @staticmethod
@@ -622,7 +703,8 @@ class OrderGateway:
     def _row(self, cid):
         """(row, error). Never raises: a store read failure is reported, not thrown."""
         try:
-            return self.store.get(cid), None
+            with self.store.bounded(self._db_timeout()):
+                return self.store.get(cid), None
         except Exception as e:  # noqa: BLE001
             return None, f"store read failed: {type(e).__name__}: {e}"
 
@@ -641,13 +723,25 @@ class OrderGateway:
     def _record(self, cid, to_state, order_id=None, error=None, conflict_detail=None):
         """(applied, persisted, persistence_error). Never raises."""
         try:
-            return (self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error,
-                                          conflict_detail=conflict_detail), True, None)
+            with self.store.bounded(self._db_timeout()):
+                return (self.store.transition(cid, to_state, self.now_ns(), order_id=order_id, error=error,
+                                              conflict_detail=conflict_detail), True, None)
         except PersistenceError as e:
             return False, False, str(e)
 
     # ---------------------------------------------------------------- submit
     def submit(self, order_request, purpose: str) -> SubmitResult:
+        """End-to-end budget = submit_deadline_s (stage 2b): POST wait, DB writes, reconcile reads and
+        scan all draw on ONE budget. At exhaustion the result is UNRESOLVED and reconciliation is
+        deferred to recover_pending(). A request that timed out may still complete later."""
+        prev = self._budget()
+        self._tl.budget = Budget(self.submit_deadline_s)
+        try:
+            return self._submit(order_request, purpose)
+        finally:
+            self._tl.budget = prev
+
+    def _submit(self, order_request, purpose: str) -> SubmitResult:
         cid = getattr(order_request, "client_order_id", None)
         if not cid:
             raise ValueError("every order must carry a client_order_id (use new_client_order_id)")
@@ -665,7 +759,8 @@ class OrderGateway:
             return SubmitResult("NOT_SUBMITTED", cid, persisted=True,
                                 detail="broker call capacity saturated; nothing sent; no intent created")
         try:
-            created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
+            with self.store.bounded(self._db_timeout()):
+                created = self.store.create_submitting(cid, purpose, self.symbol, payload, self.now_ns())
         except PersistenceError as e:
             self.runner.release_unused()
             # History was readable and had no row for this id, so nothing was sent under it.
@@ -691,14 +786,19 @@ class OrderGateway:
 
     def _post_and_record(self, order_request, cid, payload) -> SubmitResult:
         """The single POST for this id. Never raises after the POST has been attempted."""
-        with self._inflight_lock:
-            self._inflight_cids.add(cid)
+        store, now_ns = self.store, self.now_ns
 
-        def _done():
-            with self._inflight_lock:
-                self._inflight_cids.discard(cid)
-        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), self.submit_deadline_s,
-                                       on_done=_done)
+        def _done(value, error):
+            # Runs in the WORKER when the request really ends (maybe after the caller returned).
+            # Bookkeeping only: clears the durable in-flight marker; never changes intent state.
+            if error is None and value is not None:
+                res = f"ok:{getattr(value, 'id', '?')}"
+            else:
+                res = f"error:{type(error).__name__}:{_status(error)}"
+            store.mark_post_finished(cid, res, now_ns())
+        b = self._budget()
+        wait = self.submit_deadline_s if b is None else max(0.0, b.remaining() - FINAL_WRITE_RESERVE_S - SCHED_MARGIN_S)
+        out = self.runner.run_reserved(lambda: self.client.submit_order(order_request), wait, on_done=_done)
         if out.state == "DEADLINE":
             # The POST may still reach the broker or complete late; its response will be DISCARDED.
             # Never "not sent": UNRESOLVED, reconciled by the same client id.
@@ -934,14 +1034,16 @@ class OrderGateway:
         row, err = self._row(cid)
         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
-        if self.submit_in_flight(cid):
-            return self._from_row(cid, detail="abandon refused: this process still has the POST for this id in flight")
+        blocked = self._post_outcome_blocks_resolution(cid)
+        if blocked:
+            return self._from_row(cid, detail=f"abandon refused: {blocked}")
         fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "UNRESOLVED":
             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
             return fresh
-        if self.submit_in_flight(cid):
-            fresh.detail = f"abandon refused: POST for this id in flight; {fresh.detail}"
+        blocked = self._post_outcome_blocks_resolution(cid)
+        if blocked:
+            fresh.detail = f"abandon refused: {blocked}; {fresh.detail}"
             return fresh
         refusal = self._negative_check_refusal(fresh)
         if refusal:
@@ -962,11 +1064,15 @@ class OrderGateway:
         Runs a fresh reconcile first (a late order turns it into CONFLICT and keeps the lock).
         Monitoring continues afterwards; a late order still becomes CONFLICT and re-locks."""
         self._require_operator(operator, note)
+        if not self.lock_release_enabled:
+            return self._from_row(cid, detail="release refused (lock HELD): operational lock release is DISABLED "
+                                              "until the reviewed mechanism and a separately approved policy allow it")
         row, err = self._row(cid)
         if err or row is None or row["state"] != "ABANDONED":
             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
-        if self.submit_in_flight(cid):
-            return self._from_row(cid, detail="release refused (lock HELD): POST for this id still in flight")
+        blocked = self._post_outcome_blocks_resolution(cid)
+        if blocked:
+            return self._from_row(cid, detail=f"release refused (lock HELD): {blocked}")
         fresh = self.reconcile(cid, force_scan=True)
         if fresh.state != "ABANDONED":
             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
