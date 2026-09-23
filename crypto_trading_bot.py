@@ -1193,7 +1193,7 @@ def main():
                     if remaining is None:
                         log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
                             "outcome. State preserved, no trade logged; next cycle re-checks.")
-                        exit_unconfirmed = True
+                        pass  # state intentionally untouched: exit unconfirmed
                     elif remaining > 0:
                         log(f"  Warning: {remaining} BTC still held after the emergency sell — leaving position tracked for next cycle rather than clearing state.")
                         db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy=entry_strategy)
@@ -1324,7 +1324,7 @@ def main():
                             if remaining is None:
                                 log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
                                     "outcome. State preserved, no trade logged; next cycle re-checks.")
-                                exit_unconfirmed = True
+                                pass  # state intentionally untouched: exit unconfirmed
                             elif remaining > 0:
                                 log(f"[STRATEGY: SCALP]  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None,
@@ -1382,7 +1382,7 @@ def main():
                         if remaining is None:
                             log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
                                 "outcome. State preserved, no trade logged; next cycle re-checks.")
-                            exit_unconfirmed = True
+                            pass  # state intentionally untouched: exit unconfirmed
                         elif remaining > 0:
                             log(f"  Warning: {remaining} BTC still held after time-decay sell — leaving position tracked for next cycle rather than clearing state.")
                             db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
@@ -1480,7 +1480,7 @@ def main():
                             if remaining is None:
                                 log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
                                     "outcome. State preserved, no trade logged; next cycle re-checks.")
-                                exit_unconfirmed = True
+                                pass  # state intentionally untouched: exit unconfirmed
                             elif remaining > 0:
                                 log(f"  Warning: {remaining} BTC still held after trail-breach sell — leaving position tracked rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=entry, stop_order_id=None, stop_price=None, entry_time=entry_time, peak_price=peak, entry_strategy="TREND")
@@ -1597,7 +1597,7 @@ def main():
                             if remaining is None:
                                 log("  EXIT UNCONFIRMED — the sell was submitted but no position read confirmed the "
                                     "outcome. State preserved, no trade logged; next cycle re-checks.")
-                                exit_unconfirmed = True
+                                pass  # state intentionally untouched: exit unconfirmed
                             elif remaining > 0:
                                 log(f"  Warning: {remaining} BTC still held after the sell — likely a partial fill. Leaving position tracked for next cycle's reconciliation rather than clearing state.")
                                 db.set_position_state(SYMBOL, entry_price=pos_state.get("entry_price"), stop_order_id=None, stop_price=None, entry_time=pos_state.get("entry_time"), peak_price=pos_state.get("peak_price"), entry_strategy="TREND")
