@@ -1,0 +1,10 @@
+test_eventual_visibility_completes_with_a_single_sell (test_stage5d_visibility.V_DelayedVisibility) ... expected failure
+test_invisible_accepted_sell_is_not_followed_by_a_second_sell (test_stage5d_visibility.V_DelayedVisibility) ... expected failure
+test_invisible_order_filled_position_flat_is_not_completed_until_reconciled (test_stage5d_visibility.V_DelayedVisibility) ... expected failure
+test_restart_while_invisible_does_not_resubmit (test_stage5d_visibility.V_DelayedVisibility) ... expected failure
+test_escalates_after_bound_without_resubmitting (test_stage5d_visibility.W_DraftEscalation) ... skipped 'draft R1 behavior'
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.073s
+
+OK (skipped=1, expected failures=4)

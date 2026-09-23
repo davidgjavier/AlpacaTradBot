@@ -1,0 +1,50 @@
+test_eventual_visibility_completes_with_a_single_sell (test_stage5d_visibility.V_DelayedVisibility) ... FAIL
+test_invisible_accepted_sell_is_not_followed_by_a_second_sell (test_stage5d_visibility.V_DelayedVisibility) ... FAIL
+test_invisible_order_filled_position_flat_is_not_completed_until_reconciled (test_stage5d_visibility.V_DelayedVisibility) ... FAIL
+test_restart_while_invisible_does_not_resubmit (test_stage5d_visibility.V_DelayedVisibility) ... FAIL
+test_escalates_after_bound_without_resubmitting (test_stage5d_visibility.W_DraftEscalation) ... FAIL
+
+======================================================================
+FAIL: test_eventual_visibility_completes_with_a_single_sell (test_stage5d_visibility.V_DelayedVisibility)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5d_visibility.py", line 97, in test_eventual_visibility_completes_with_a_single_sell
+    self.assertEqual(len(market_submissions(ns["_broker"])), 1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_invisible_accepted_sell_is_not_followed_by_a_second_sell (test_stage5d_visibility.V_DelayedVisibility)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5d_visibility.py", line 88, in test_invisible_accepted_sell_is_not_followed_by_a_second_sell
+    self.assertEqual(len(market_submissions(ns["_broker"])), 1,
+AssertionError: 2 != 1 : a second sell was submitted under a new client id while the first was invisible
+
+======================================================================
+FAIL: test_invisible_order_filled_position_flat_is_not_completed_until_reconciled (test_stage5d_visibility.V_DelayedVisibility)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5d_visibility.py", line 116, in test_invisible_order_filled_position_flat_is_not_completed_until_reconciled
+    self.assertTrue(pending(ns), "completed with its own sell unresolved")
+AssertionError: None is not true : completed with its own sell unresolved
+
+======================================================================
+FAIL: test_restart_while_invisible_does_not_resubmit (test_stage5d_visibility.V_DelayedVisibility)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5d_visibility.py", line 107, in test_restart_while_invisible_does_not_resubmit
+    self.assertEqual(len(market_submissions(n2["_broker"])), 1)
+AssertionError: 2 != 1
+
+======================================================================
+FAIL: test_escalates_after_bound_without_resubmitting (test_stage5d_visibility.W_DraftEscalation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/davidj/AlpacaTradeBot_integration_worktree/tests/test_stage5d_visibility.py", line 137, in test_escalates_after_bound_without_resubmitting
+    self.assertTrue(liq and liq.get("escalated"), "no escalation after the visibility bound")
+AssertionError: None is not true : no escalation after the visibility bound
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.088s
+
+FAILED (failures=5)
