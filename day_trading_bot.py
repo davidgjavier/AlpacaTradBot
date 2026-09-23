@@ -81,6 +81,7 @@ Setup:
   python3 day_trading_bot.py
 """
 
+import math
 import os
 import sys
 import time
@@ -110,6 +111,7 @@ LONG_WINDOW = 21
 POSITION_SIZE_USD = 500
 STOP_LOSS_PCT = 0.05
 CHECK_INTERVAL_SECONDS = 300
+EQUITY_RVOL_THRESHOLD = 1.0
 MAX_DAY_TRADES_PER_5_DAYS = 3
 DAILY_LOSS_LIMIT_USD = 150
 EQUITY_BASELINE_KEY = "stocks"
@@ -202,7 +204,7 @@ def print_cycle_telemetry(market_open):
             ema21 = strategies.ema(closes, LONG_WINDOW)[-1]
             macro = strategies.is_above_macro_trend(macro_closes)
             macro_text = "Bullish/PASS" if macro is True else ("Bearish/FAIL" if macro is False else "N/A/FAIL")
-            rvol = strategies.is_volume_confirmed(volumes, multiplier=strategies.rvol_multiplier_for("trend"))
+            rvol = strategies.is_volume_confirmed(volumes, multiplier=EQUITY_RVOL_THRESHOLD)
             rvol_text = "PASS" if rvol else "FAIL"
             spread_text = "PASS" if spread_ok else "FAIL"
             signal = check_crossover(closes)
@@ -491,10 +493,21 @@ def place_order(symbol, side, price, atr_value=None):
     if side == "buy":
         if not is_spread_ok(symbol):
             return None
-        qty = round(POSITION_SIZE_USD / price, 4)
+        # Alpaca rejects fractional quantities on bracket orders. Use a
+        # whole-share quantity so the ATR stop and take-profit legs remain
+        # attached to the entry order.
+        qty = max(1, math.floor(strategies.MAX_POSITION_USD / price))
         if atr_value and atr_value > 0:
             stop_price = round(price - strategies.STOP_ATR_MULT * atr_value, 2)
-            take_profit_price = round(price + strategies.TARGET_ATR_MULT * atr_value, 2)
+            # TAKE_PROFIT_PCT is an opt-in override (default 0 = off):
+            # when set, it REPLACES the ATR-based target below rather
+            # than combining with it — one target, not two competing
+            # ones. Left at its default 0, this is byte-for-byte the
+            # original ATR-based calculation.
+            if strategies.TAKE_PROFIT_PCT > 0:
+                take_profit_price = round(price * (1 + strategies.TAKE_PROFIT_PCT / 100), 2)
+            else:
+                take_profit_price = round(price + strategies.TARGET_ATR_MULT * atr_value, 2)
         else:
             # ATR unavailable (early in the bot's life, or a data
             # error) — fall back to the fixed 5% stop with no
@@ -578,6 +591,7 @@ def is_market_hours():
 
 
 def main():
+    global SHORT_WINDOW, LONG_WINDOW
     log(
         "-",
         f"Fully automatic day trading bot started (Tier 1: SQLite state, live PDT "
@@ -596,9 +610,34 @@ def main():
     )
 
     while True:
+        # Tier 6 / Phase 4: fetch the current GLOBAL param overrides
+        # once per cycle (cheap, reused for every symbol below) —
+        # NOT applied to strategies.py's globals here anymore. Per-
+        # symbol resolution now happens individually inside the
+        # ticker loop below, since NVDA/INTC/NOK can each have their
+        # own override on top of this shared global one, and a single
+        # process trading three symbols in the same cycle can't
+        # represent three different simultaneous values with one set
+        # of module globals — see strategies.resolve_effective_params.
+        global_param_overrides = db.get_strategy_params()
+
+        # Phase 3 weekend safeguard: explicit, belt-and-suspenders on
+        # top of is_market_hours() below (which already returns closed
+        # on weekends via Alpaca's own calendar — NYSE isn't open
+        # Saturday/Sunday regardless). Kept as its own separate check,
+        # with its own distinct log line, so equities being dormant on
+        # a weekend is asserted directly rather than relying solely on
+        # a side effect of the calendar lookup — if that lookup were
+        # ever changed or its behavior misunderstood, this still holds
+        # the line independently.
+        if datetime.now(ZoneInfo("America/New_York")).weekday() >= 5:
+            log("-", f"[{datetime.now().strftime('%I:%M:%S %p')}] Weekend — equity bot stays dormant regardless of market-hours check (NVDA/INTC/NOK only).")
+            time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
+
         market_open = is_market_hours()
         if not market_open:
-            log("-", f"[{datetime.now().strftime('%H:%M:%S')}] Market closed. Waiting...")
+            log("-", f"[{datetime.now().strftime('%I:%M:%S %p')}] Market closed. Waiting...")
             print_cycle_telemetry(market_open=False)
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
@@ -628,7 +667,7 @@ def main():
             if not already_flattened_today:
                 log(
                     "-",
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Daily loss limit hit "
+                    f"[{datetime.now().strftime('%I:%M:%S %p')}] Daily loss limit hit "
                     f"(P/L ${today_pl:.2f}) — flattening all open positions and "
                     f"halting new entries for the rest of today.",
                 )
@@ -643,12 +682,12 @@ def main():
         eod_flatten = in_eod_flatten_window()
         blackout = opening_blackout or midday_lull or eod_flatten
         if opening_blackout:
-            log("-", f"[{datetime.now().strftime('%H:%M:%S')}] In the 9:30–9:45 ET opening blackout window — no new entries this cycle (exits still allowed).")
+            log("-", f"[{datetime.now().strftime('%I:%M:%S %p')}] In the 9:30–9:45 ET opening blackout window — no new entries this cycle (exits still allowed).")
         elif midday_lull:
-            log("-", f"[{datetime.now().strftime('%H:%M:%S')}] In the 11:30–13:30 ET midday volume lull — no new entries this cycle (exits still allowed).")
+            log("-", f"[{datetime.now().strftime('%I:%M:%S %p')}] In the 11:30–13:30 ET midday volume lull — no new entries this cycle (exits still allowed).")
         elif eod_flatten:
             if baseline.get("eod_flattened_stamp") != today_stamp:
-                log("-", f"[{datetime.now().strftime('%H:%M:%S')}] In the EOD flatten window ({strategies.EOD_FLATTEN_MINUTES_BEFORE_CLOSE}min before close) — closing all open equity positions to avoid overnight gap risk.")
+                log("-", f"[{datetime.now().strftime('%I:%M:%S %p')}] In the EOD flatten window ({strategies.EOD_FLATTEN_MINUTES_BEFORE_CLOSE}min before close) — closing all open equity positions to avoid overnight gap risk.")
                 for symbol in TICKERS:
                     flatten_position(symbol, "end-of-day flatten (overnight gap risk)")
                 db.mark_eod_flattened(EQUITY_BASELINE_KEY, today_stamp)
@@ -657,6 +696,26 @@ def main():
         for symbol in TICKERS:
             if db.is_paused(symbol):
                 continue
+
+            # Phase 4: resolve THIS symbol's effective params (code
+            # default -> global override -> this symbol's own
+            # override) and apply them to strategies.py's globals
+            # before doing anything else for this symbol. Every
+            # strategies.* call below (atr(), is_above_macro_trend(),
+            # chandelier_stop_price(), the bare strategies.STOP_ATR_
+            # MULT/TARGET_ATR_MULT/MAX_POSITION_USD/TAKE_PROFIT_PCT
+            # reads inside place_order()) picks these up immediately
+            # since they all read live at call time, not at def time.
+            # Re-applying per symbol like this is safe specifically
+            # because this loop is single-threaded and sequential —
+            # NVDA finishes fully before INTC starts, so there's no
+            # window where two symbols' values could be live at once.
+            symbol_params = strategies.resolve_effective_params(
+                symbol, global_param_overrides, db.get_strategy_params_for_symbol(symbol)
+            )
+            strategies.apply_live_params(symbol_params)
+            SHORT_WINDOW = strategies.SHORT_WINDOW
+            LONG_WINDOW = strategies.LONG_WINDOW
 
             try:
                 highs, lows, closes, volumes = get_bars(symbol)
@@ -763,10 +822,10 @@ def main():
             if signal is None:
                 continue
 
-            log(symbol, f"[{datetime.now().strftime('%H:%M:%S')}] SIGNAL: {signal.upper()} {symbol} @ ~${latest_price:.2f}")
+            log(symbol, f"[{datetime.now().strftime('%I:%M:%S %p')}] SIGNAL: {signal.upper()} {symbol} @ ~${latest_price:.2f}")
 
             if signal == "buy":
-                rvol_mult = strategies.rvol_multiplier_for("trend")  # equities only run the EMA-crossover ("trend") signal
+                rvol_mult = EQUITY_RVOL_THRESHOLD  # equities only run the EMA-crossover ("trend") signal
                 if day_trades_used >= MAX_DAY_TRADES_PER_5_DAYS:
                     log(symbol, f"  Skipping — PDT limit reached ({day_trades_used}/{MAX_DAY_TRADES_PER_5_DAYS} day trades per Alpaca).")
                     continue

@@ -18,6 +18,15 @@ import re
 import time
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+# Explicit Pacific time for every timestamp this dashboard displays —
+# previously some used astimezone() with no argument (whatever the
+# system's local timezone happens to be, implicit and fragile) and
+# Recent Orders showed Alpaca's raw UTC submitted_at with no
+# conversion at all. Both now go through this one constant so the
+# whole page is unambiguous and consistent.
+DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,7 +43,14 @@ from flask import request
 
 import strategies
 import db
-from crypto_trading_bot import place_protective_stop, cancel_and_confirm as cancel_crypto_and_confirm
+from crypto_trading_bot import (
+    place_protective_stop,
+    cancel_and_confirm as cancel_crypto_and_confirm,
+    flatten_position as flatten_crypto_position,
+    get_position_qty as get_crypto_position_qty,
+    PAPER as CRYPTO_PAPER,
+    LIVE_TRADING_ENABLED as CRYPTO_LIVE_TRADING_ENABLED,
+)
 from day_trading_bot import cancel_open_orders as cancel_equity_orders
 
 API_KEY = os.environ.get("ALPACA_API_KEY")
@@ -74,27 +90,32 @@ def clean_message(msg):
     return msg
 
 
+def get_moves_for_symbol(sym, limit=20):
+    """Single-symbol version of get_moves_by_symbol()'s per-ticker
+    logic — used by the individual chart page's own Recent Moves
+    panel, so switching symbols there doesn't require computing all
+    four tickers' worth of history on every switch."""
+    moves = []
+    for e in db.get_recent_activity(symbol=sym, limit=200):
+        msg = e["message"]
+        if not any(k in msg for k in MOVE_KEYWORDS):
+            continue
+        try:
+            ts = datetime.fromisoformat(e["timestamp"])
+            local_time = ts.astimezone(DISPLAY_TZ).strftime("%m/%d %I:%M:%S %p %Z")
+        except Exception:
+            local_time = "-"
+        moves.append({"time_local": local_time, "message": clean_message(msg)})
+        if len(moves) >= limit:
+            break
+    return moves
+
+
 def get_moves_by_symbol(limit_per_symbol=20):
     """Reads from the shared SQLite activity log (symbol is tagged at
     write time now, not sniffed out of the message text) and keeps
     only the 'move' style entries per ticker."""
-    grouped = {}
-    for sym in STOCK_TICKERS + [CRYPTO_SYMBOL]:
-        moves = []
-        for e in db.get_recent_activity(symbol=sym, limit=200):
-            msg = e["message"]
-            if not any(k in msg for k in MOVE_KEYWORDS):
-                continue
-            try:
-                ts = datetime.fromisoformat(e["timestamp"])
-                local_time = ts.astimezone().strftime("%m/%d %H:%M:%S")
-            except Exception:
-                local_time = "-"
-            moves.append({"time_local": local_time, "message": clean_message(msg)})
-            if len(moves) >= limit_per_symbol:
-                break
-        grouped[sym] = moves
-    return grouped
+    return {sym: get_moves_for_symbol(sym, limit_per_symbol) for sym in STOCK_TICKERS + [CRYPTO_SYMBOL]}
 
 
 def get_symbol_status(positions):
@@ -131,8 +152,12 @@ PAGE = """
   </style>
 </head>
 <body>
-  <h1>Alpaca Live Dashboard <span class="mode">({{ 'PAPER' if paper else 'LIVE' }})</span></h1>
+  <h1>Alpaca Live Dashboard <span class="mode">({{ 'PAPER' if paper else 'LIVE' }})</span>
+    <span id="cryptoBadge" style="float:right; font-size:13px; padding:4px 10px; border-radius:6px; font-weight:600;">···</span>
+  </h1>
   <p><a href="/charts" style="color:#60a5fa;">📈 View live charts (candles, EMA lines, stop-loss)</a></p>
+  <p><a href="/settings" style="color:#60a5fa;">⚙️ Strategy settings (MA lengths, ATR multipliers, macro filter)</a></p>
+  <p><button id="emergencyFlattenBtn" style="background:#7f1d1d; border:1px solid #f87171; color:#fecaca; padding:8px 16px; border-radius:8px; font-size:13px; cursor:pointer;">🛑 Emergency Flatten BTC/USD</button> <span id="flattenStatus" style="font-size:13px; margin-left:8px;"></span></p>
 
   <div class="cards">
     <div class="card">
@@ -176,7 +201,7 @@ PAGE = """
 
     <h2 style="margin-top:22px;">Recent Moves</h2>
     {% for sym in symbols_order %}
-    <details style="margin:8px 0 8px 24px;">
+    <details style="margin:8px 0 8px 24px;" data-symbol="{{ sym }}">
       <summary style="cursor:pointer; color:#ccc; font-size:14px; padding:6px 0;">
         {{ sym }} <span style="color:#666; font-weight:normal;">({{ moves_by_symbol[sym]|length }})</span>
       </summary>
@@ -240,6 +265,80 @@ PAGE = """
   </section>
 
   <div class="updated">Last updated {{ now }} — refreshes automatically every 5 seconds.</div>
+
+  <script>
+    // The page does a full reload every 5s (meta refresh), which
+    // resets any <details> back to its default closed state on every
+    // reload — that's what made "Recent Moves" feel like it snapped
+    // shut right after opening. localStorage survives a full page
+    // reload (unlike in-memory JS state), so this restores whichever
+    // symbols were open BEFORE the next refresh replaces the DOM, and
+    // keeps saving the current open/closed set as the user toggles.
+    (function () {
+      const STORAGE_KEY = 'recentMovesOpen';
+      let openSet;
+      try {
+        openSet = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'));
+      } catch (e) {
+        openSet = new Set();
+      }
+      document.querySelectorAll('details[data-symbol]').forEach(function (d) {
+        if (openSet.has(d.dataset.symbol)) d.open = true;
+        d.addEventListener('toggle', function () {
+          if (d.open) {
+            openSet.add(d.dataset.symbol);
+          } else {
+            openSet.delete(d.dataset.symbol);
+          }
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(openSet)));
+          } catch (e) { /* ignore */ }
+        });
+      });
+    })();
+
+    async function loadCryptoBadge() {
+      try {
+        const res = await fetch('/api/live_status');
+        const d = await res.json();
+        const badge = document.getElementById('cryptoBadge');
+        if (d.crypto_live) {
+          badge.textContent = 'BTC: LIVE';
+          badge.style.background = '#7f1d1d';
+          badge.style.color = '#fecaca';
+          badge.style.border = '1px solid #f87171';
+        } else {
+          badge.textContent = 'BTC: PAPER';
+          badge.style.background = '#14532d';
+          badge.style.color = '#bbf7d0';
+          badge.style.border = '1px solid #4ade80';
+        }
+      } catch (e) { /* ignore */ }
+    }
+    loadCryptoBadge();
+
+    document.getElementById('emergencyFlattenBtn').onclick = async () => {
+      if (!confirm('This immediately cancels the BTC/USD protective stop and market-sells the FULL position, then pauses the crypto bot until you manually reconnect it. Proceed?')) return;
+      const btn = document.getElementById('emergencyFlattenBtn');
+      const statusEl = document.getElementById('flattenStatus');
+      btn.disabled = true;
+      statusEl.textContent = 'Flattening…';
+      try {
+        const res = await fetch('/api/emergency_flatten_crypto', { method: 'POST' });
+        const d = await res.json();
+        if (d.error) {
+          statusEl.textContent = 'Error: ' + d.error;
+        } else if (!d.flattened) {
+          statusEl.textContent = d.message;
+        } else {
+          statusEl.textContent = 'Flattened ' + d.qty + ' BTC. Bot paused — reconnect manually when ready.';
+        }
+      } catch (e) {
+        statusEl.textContent = 'Flatten request failed.';
+      }
+      btn.disabled = false;
+    };
+  </script>
 </body>
 </html>
 """
@@ -267,7 +366,7 @@ def home():
     orders = []
     for o in trading_client.get_orders(orders_request):
         orders.append({
-            "time": o.submitted_at.strftime("%Y-%m-%d %H:%M:%S") if o.submitted_at else "-",
+            "time": o.submitted_at.astimezone(DISPLAY_TZ).strftime("%Y-%m-%d %I:%M:%S %p %Z") if o.submitted_at else "-",
             "symbol": o.symbol,
             "side": o.side.value if o.side else "-",
             "qty": o.qty,
@@ -287,7 +386,7 @@ def home():
         symbol_status=get_symbol_status(positions),
         moves_by_symbol=get_moves_by_symbol(20),
         active_crypto_strategy=db.get_active_strategy(),
-        now=datetime.now().strftime("%H:%M:%S"),
+        now=datetime.now(DISPLAY_TZ).strftime("%I:%M:%S %p %Z"),
     )
 
 
@@ -326,7 +425,10 @@ CHARTS_PAGE = """
   </style>
 </head>
 <body>
-  <h1>Live Charts <a href="/" style="float:right; font-size:14px;">← back to dashboard</a></h1>
+  <h1>Live Charts <a href="/settings" style="float:right; font-size:14px; margin-left:16px;">⚙️ settings</a><a href="/" style="float:right; font-size:14px;">← back to dashboard</a>
+    <span id="cryptoBadge" style="font-size:13px; padding:4px 10px; border-radius:6px; font-weight:600; margin-left:16px;">···</span>
+    <button id="emergencyFlattenBtn" style="background:#7f1d1d; border:1px solid #f87171; color:#fecaca; padding:5px 12px; border-radius:6px; font-size:12px; cursor:pointer; margin-left:10px;">🛑 Flatten BTC</button>
+  </h1>
   <div class="tabs" id="tabs"></div>
   <div class="tabs" id="tfTabs"></div>
   <div class="tabs" id="strategyTabs" style="display:none; align-items:center;">
@@ -347,6 +449,9 @@ CHARTS_PAGE = """
   <div id="chart" style="height:560px;"></div>
   <div class="legend" id="legend"></div>
   <div class="status"><span class="live-dot" id="liveDot"></span><span id="status"></span></div>
+
+  <h2 style="margin-top:22px; font-size:16px; color:#ccc;">Recent Moves <span id="movesSymbolLabel" style="color:#666; font-weight:normal;"></span></h2>
+  <div id="movesPanel"></div>
 
   <script>
     const symbols = {{ symbols|tojson }};
@@ -508,13 +613,27 @@ CHARTS_PAGE = """
     let lastArrs = null;     // completed bars + liveCandle, used for the plot & zoom
     let visibleBars = null;  // null = show everything
 
+    // Date.toISOString() ALWAYS returns a UTC-suffixed string ("...Z"),
+    // regardless of what the Date represents internally. The backend
+    // now sends every bar's time as a NAIVE Pacific-local string (no
+    // suffix) — mixing in a toISOString() result here would silently
+    // shift just that one timestamp 7-8 hours off from every other
+    // entry in the same array. This formats from the Date's own LOCAL
+    // getters instead, matching the backend's naive-local format
+    // exactly.
+    function toNaiveLocalISOString(d) {
+      const pad = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+             'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
     function resetLiveCandle(data) {
       if (!data.times.length) { liveCandle = null; return; }
       const intervalMs = currentTf * 60000;
       const lastBarTime = new Date(data.times[data.times.length - 1]).getTime();
       const lastClose = data.close[data.close.length - 1];
       liveCandle = {
-        time: new Date(lastBarTime + intervalMs).toISOString(),
+        time: toNaiveLocalISOString(new Date(lastBarTime + intervalMs)),
         open: lastClose, high: lastClose, low: lastClose, close: lastClose,
       };
     }
@@ -540,7 +659,7 @@ CHARTS_PAGE = """
       if (!total) return null;
       const intervalMs = currentTf * 60000;
       const padMs = intervalMs * 3; // leave ~3 bars of empty space on the right
-      const endTime = new Date(new Date(times[total - 1]).getTime() + padMs).toISOString();
+      const endTime = toNaiveLocalISOString(new Date(new Date(times[total - 1]).getTime() + padMs));
       const startTime = (!visibleBars || visibleBars >= total) ? times[0] : times[total - visibleBars];
       return [startTime, endTime];
     }
@@ -572,12 +691,16 @@ CHARTS_PAGE = """
       applyZoom();
     };
 
+    function pacificTime12h() {
+      return new Date().toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour12: true, hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    }
+
     function setStatus(price) {
       let msg;
       if (price !== undefined) {
-        msg = 'LIVE · ' + current + ' $' + price.toFixed(2) + ' · ' + currentTf + 'm bars · ' + new Date().toLocaleTimeString();
+        msg = 'LIVE · ' + current + ' $' + price.toFixed(2) + ' · ' + currentTf + 'm bars · ' + pacificTime12h();
       } else {
-        msg = 'Updated ' + new Date().toLocaleTimeString() + ' · ' + currentTf + 'm bars';
+        msg = 'Updated ' + pacificTime12h() + ' · ' + currentTf + 'm bars';
       }
       if (lastData && lastData.entry_price) msg += ' · entry $' + lastData.entry_price.toFixed(2);
       if (lastData && lastData.stop_price) msg += ' · stop $' + lastData.stop_price.toFixed(2);
@@ -603,11 +726,41 @@ CHARTS_PAGE = """
       return html;
     }
 
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function loadMoves() {
+      document.getElementById('movesSymbolLabel').textContent = '(' + current + ')';
+      const panel = document.getElementById('movesPanel');
+      let moves;
+      try {
+        const res = await fetch('/api/moves/' + encodeURIComponent(current));
+        moves = await res.json();
+      } catch (e) {
+        panel.innerHTML = '<p style="color:#666; font-size:13px;">Error loading recent moves.</p>';
+        return;
+      }
+      if (!moves || !moves.length) {
+        panel.innerHTML = '<p style="color:#666; font-size:13px;">No recent activity.</p>';
+        return;
+      }
+      let html = '<table><tr><th>Time</th><th>Event</th></tr>';
+      moves.forEach(m => {
+        html += '<tr><td>' + escapeHtml(m.time_local) + '</td><td>' + escapeHtml(m.message) + '</td></tr>';
+      });
+      html += '</table>';
+      panel.innerHTML = html;
+    }
+
     async function render() {
       setActive();
       updateStrategyVisibility();
       if (current === 'BTC/USD') fetchStrategy();
       fetchControl();
+      loadMoves();
       document.getElementById('liveDot').style.display = 'none';
       document.getElementById('status').textContent = 'Loading ' + current + '...';
       let data;
@@ -680,7 +833,8 @@ CHARTS_PAGE = """
         paper_bgcolor: '#0e0e0e', plot_bgcolor: '#0e0e0e',
         font: {color: '#ccc'},
         margin: {t: 20, r: 20, l: 50, b: 40},
-        xaxis: { rangeslider: {visible: false}, gridcolor: '#222', autorange: !range, range: range || undefined },
+        xaxis: { rangeslider: {visible: false}, gridcolor: '#222', autorange: !range, range: range || undefined,
+                 tickformat: '%I:%M %p', hoverformat: '%m/%d %I:%M:%S %p' },
         yaxis: { gridcolor: '#222', autorange: true, domain: showRsiPanel ? [0.32, 1] : [0, 1] },
         shapes: shapes,
         showlegend: false,
@@ -720,6 +874,47 @@ CHARTS_PAGE = """
       setStatus(price);
     }
 
+    async function loadCryptoBadge() {
+      try {
+        const res = await fetch('/api/live_status');
+        const d = await res.json();
+        const badge = document.getElementById('cryptoBadge');
+        if (d.crypto_live) {
+          badge.textContent = 'BTC: LIVE';
+          badge.style.background = '#7f1d1d'; badge.style.color = '#fecaca'; badge.style.border = '1px solid #f87171';
+        } else {
+          badge.textContent = 'BTC: PAPER';
+          badge.style.background = '#14532d'; badge.style.color = '#bbf7d0'; badge.style.border = '1px solid #4ade80';
+        }
+      } catch (e) { /* ignore */ }
+    }
+    loadCryptoBadge();
+    setInterval(loadCryptoBadge, 30000);
+
+    document.getElementById('emergencyFlattenBtn').onclick = async () => {
+      if (!confirm('This immediately cancels the BTC/USD protective stop and market-sells the FULL position, then pauses the crypto bot until you manually reconnect it. Proceed?')) return;
+      const btn = document.getElementById('emergencyFlattenBtn');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Flattening…';
+      try {
+        const res = await fetch('/api/emergency_flatten_crypto', { method: 'POST' });
+        const d = await res.json();
+        if (d.error) {
+          alert('Error: ' + d.error);
+        } else if (!d.flattened) {
+          alert(d.message);
+        } else {
+          alert('Flattened ' + d.qty + ' BTC. Bot paused — reconnect manually via the "Bot: OFF" toggle when ready.');
+          render();
+        }
+      } catch (e) {
+        alert('Flatten request failed.');
+      }
+      btn.disabled = false;
+      btn.textContent = original;
+    };
+
     render();
     setInterval(render, 30000);
     setInterval(pollLive, 3000);
@@ -733,6 +928,214 @@ CHARTS_PAGE = """
 def charts_page():
     symbols = STOCK_TICKERS + [CRYPTO_SYMBOL]
     return render_template_string(CHARTS_PAGE, symbols=symbols)
+
+
+SETTINGS_PAGE = """
+<!doctype html>
+<html>
+<head>
+  <title>Strategy Settings</title>
+  <style>
+    body { font-family: -apple-system, Helvetica, Arial, sans-serif; background: #0e0e0e; color: #eee; margin: 0; padding: 24px; max-width: 720px; }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    h2 { font-size: 14px; color: #ccc; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .warn { background: #2a1a0a; border: 1px solid #7c4a12; color: #fbbf24; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 16px 0; }
+    .tabs { display: flex; gap: 6px; margin: 16px 0; flex-wrap: wrap; }
+    .tab-btn { background: #1a1a1a; border: 1px solid #2a2a2a; color: #eee; padding: 7px 14px;
+               border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .tab-btn.active { background: #2563eb; border-color: #2563eb; }
+    .tab-btn .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #7c3aed; margin-right: 5px; }
+    .row { display: flex; align-items: center; justify-content: space-between; background: #1a1a1a; border-radius: 8px;
+           padding: 12px 16px; margin-bottom: 8px; gap: 16px; }
+    .row .label { font-size: 14px; color: #eee; }
+    .row .default { font-size: 12px; color: #666; margin-top: 2px; }
+    .row .overridden-tag { font-size: 11px; color: #7c3aed; margin-left: 8px; }
+    .row .inherited-tag { font-size: 11px; color: #60a5fa; margin-left: 8px; }
+    .row input { background: #0e0e0e; border: 1px solid #2a2a2a; color: #eee; border-radius: 6px;
+                 padding: 6px 10px; width: 90px; font-size: 14px; text-align: right; }
+    .row input:focus { outline: none; border-color: #2563eb; }
+    .actions { display: flex; gap: 10px; margin-top: 24px; align-items: center; }
+    button { background: #2563eb; border: none; color: #fff; padding: 10px 18px; border-radius: 8px;
+             font-size: 14px; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    button.secondary { background: #1a1a1a; border: 1px solid #2a2a2a; color: #eee; }
+    button.secondary:hover { background: #2a2a2a; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status { font-size: 13px; margin-left: 4px; }
+    #status.ok { color: #4ade80; }
+    #status.err { color: #f87171; }
+    .note { color: #666; font-size: 12px; margin-top: 24px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>Strategy Settings <a href="/" style="float:right; font-size:14px;">← back to dashboard</a></h1>
+  <p style="color:#999; font-size:13px;">Moving average lengths, ATR multipliers, macro-trend filter, take-profit %, and max $/trade — applied live, no bot restart needed.</p>
+
+  <div class="warn">Changes take effect on the bots' NEXT cycle (not mid-cycle). Think before changing these while a position is open.</div>
+
+  <div class="tabs" id="symbolTabs"></div>
+  <p id="modeNote" style="color:#999; font-size:12px; margin:-6px 0 16px;"></p>
+
+  <div id="groups"></div>
+
+  <div class="actions">
+    <button id="saveBtn">Save Changes</button>
+    <button id="resetBtn" class="secondary">Reset</button>
+    <span id="status"></span>
+  </div>
+
+  <p class="note">GLOBAL applies to every symbol that has no override of its own. A per-symbol tab shows a dot when that symbol has any override. On a symbol tab, a field either says "overridden for X" (its own value) or "inherited from global (Y)" (falling through to the shared setting) — editing and saving there only affects that one symbol; Reset on a symbol tab removes just that symbol's overrides, not the global ones.</p>
+
+  <script>
+    let paramsData = null;
+    let symbols = [];
+    let symbolsWithOverrides = new Set();
+    let currentSymbol = null; // null = Global
+    const tabsEl = document.getElementById('symbolTabs');
+    const groupsEl = document.getElementById('groups');
+    const statusEl = document.getElementById('status');
+    const modeNoteEl = document.getElementById('modeNote');
+    const saveBtn = document.getElementById('saveBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    function renderTabs() {
+      tabsEl.innerHTML = '';
+      const makeTab = (label, sym) => {
+        const btn = document.createElement('button');
+        btn.className = 'tab-btn' + (currentSymbol === sym ? ' active' : '');
+        const dot = (sym && symbolsWithOverrides.has(sym)) ? '<span class="dot"></span>' : '';
+        btn.innerHTML = dot + label;
+        btn.onclick = () => { currentSymbol = sym; statusEl.textContent = ''; loadAndRender(); };
+        tabsEl.appendChild(btn);
+      };
+      makeTab('GLOBAL', null);
+      symbols.forEach(s => makeTab(s, s));
+    }
+
+    function renderGroups() {
+      groupsEl.innerHTML = '';
+      paramsData.groups.forEach(group => {
+        const keys = Object.keys(paramsData.params).filter(k => paramsData.params[k].group === group);
+        if (!keys.length) return;
+        const h2 = document.createElement('h2');
+        h2.textContent = group;
+        groupsEl.appendChild(h2);
+        keys.forEach(key => {
+          const p = paramsData.params[key];
+          let tag = '';
+          if (!currentSymbol) {
+            if (p.overridden_globally) tag = '<span class="overridden-tag">● overridden</span>';
+          } else if (p.overridden_for_symbol) {
+            tag = '<span class="overridden-tag">● overridden for ' + currentSymbol + '</span>';
+          } else {
+            tag = '<span class="inherited-tag">inherited from global (' + p.global_value + ')</span>';
+          }
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.innerHTML =
+            '<div>' +
+              '<div class="label">' + p.label + tag + '</div>' +
+              '<div class="default">default: ' + p.default + '</div>' +
+            '</div>' +
+            '<input type="number" data-key="' + key + '" value="' + p.value + '" min="' + p.min + '" max="' + p.max + '" step="' + p.step + '">';
+          groupsEl.appendChild(row);
+        });
+      });
+    }
+
+    async function loadSymbolsWithOverrides() {
+      // Reuses the per-symbol GET to build the "has any override" dot —
+      // cheap enough at 3-4 symbols, avoids a dedicated endpoint just
+      // for the dot indicator.
+      symbolsWithOverrides = new Set();
+      for (const s of symbols) {
+        try {
+          const res = await fetch('/api/settings?symbol=' + encodeURIComponent(s));
+          const d = await res.json();
+          const hasAny = Object.values(d.params).some(p => p.overridden_for_symbol);
+          if (hasAny) symbolsWithOverrides.add(s);
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    async function loadAndRender() {
+      const url = currentSymbol ? '/api/settings?symbol=' + encodeURIComponent(currentSymbol) : '/api/settings';
+      const res = await fetch(url);
+      paramsData = await res.json();
+      modeNoteEl.textContent = currentSymbol
+        ? 'Editing overrides for ' + currentSymbol + ' only.'
+        : 'Editing the GLOBAL defaults — applies to every symbol without its own override.';
+      resetBtn.textContent = currentSymbol ? ('Reset ' + currentSymbol + ' to Global') : 'Reset Global to Defaults';
+      renderTabs();
+      renderGroups();
+    }
+
+    async function init() {
+      const symRes = await fetch('/api/symbols');
+      symbols = await symRes.json();
+      await loadSymbolsWithOverrides();
+      await loadAndRender();
+    }
+
+    saveBtn.onclick = async () => {
+      const inputs = groupsEl.querySelectorAll('input[data-key]');
+      const params = {};
+      inputs.forEach(inp => { params[inp.dataset.key] = parseFloat(inp.value); });
+      saveBtn.disabled = true;
+      statusEl.textContent = 'Saving…';
+      statusEl.className = '';
+      try {
+        const body = { params: params };
+        if (currentSymbol) body.symbol = currentSymbol;
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await res.json();
+        if (d.error) {
+          statusEl.textContent = d.error;
+          statusEl.className = 'err';
+        } else {
+          statusEl.textContent = 'Saved — takes effect next bot cycle.';
+          statusEl.className = 'ok';
+          await loadSymbolsWithOverrides();
+          await loadAndRender();
+        }
+      } catch (e) {
+        statusEl.textContent = 'Save failed.';
+        statusEl.className = 'err';
+      }
+      saveBtn.disabled = false;
+    };
+
+    resetBtn.onclick = async () => {
+      const msg = currentSymbol
+        ? 'Reset ' + currentSymbol + ' back to inheriting the global settings?'
+        : 'Reset every GLOBAL parameter back to its code default? (Per-symbol overrides are untouched.)';
+      if (!confirm(msg)) return;
+      resetBtn.disabled = true;
+      try {
+        const body = currentSymbol ? { symbol: currentSymbol } : {};
+        await fetch('/api/settings/reset', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        statusEl.textContent = 'Reset.';
+        statusEl.className = 'ok';
+        await loadSymbolsWithOverrides();
+        await loadAndRender();
+      } catch (e) {
+        statusEl.textContent = 'Reset failed.';
+        statusEl.className = 'err';
+      }
+      resetBtn.disabled = false;
+    };
+
+    init();
+  </script>
+</body>
+</html>
+"""
 
 
 ALLOWED_TIMEFRAMES = [1, 2, 3, 5, 10]
@@ -767,6 +1170,143 @@ def api_set_strategy():
         return jsonify({"error": f"invalid strategy: {name}"}), 400
     db.set_active_strategy(name)
     return jsonify({"ok": True, "active": name})
+
+
+def refresh_live_params(symbol=None):
+    """Pulls current overrides from the DB into THIS process's copy of
+    strategies.py's globals, so dashboard reads (settings page, chart
+    EMA overlay) reflect whatever the bots themselves would currently
+    be using. The dashboard doesn't run the trading loop, so nothing
+    else keeps this in sync — call at the top of any handler that
+    reads live params.
+
+    Phase 4: symbol-aware. With no symbol, applies the GLOBAL view
+    only (default merged with the global override table) — matches
+    what a bot would use for a symbol that has no override of its
+    own. With a symbol, applies that symbol's fully-resolved view
+    (default -> global -> that symbol's own override), matching
+    exactly what the bot itself would apply for that symbol this
+    cycle."""
+    global_overrides = db.get_strategy_params()
+    symbol_overrides = db.get_strategy_params_for_symbol(symbol) if symbol else {}
+    strategies.apply_live_params(strategies.resolve_effective_params(symbol, global_overrides, symbol_overrides))
+
+
+@app.route("/api/symbols", methods=["GET"])
+def api_get_symbols():
+    """The full list of tradeable symbols, for the settings page to
+    build its per-symbol tabs from — reads the same STOCK_TICKERS/
+    CRYPTO_SYMBOL constants everything else in this file uses, so a
+    ticker added there automatically gets a settings tab with no
+    further code change."""
+    return jsonify(STOCK_TICKERS + [CRYPTO_SYMBOL])
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    symbol = request.args.get("symbol") or None
+    global_overrides = db.get_strategy_params()
+    symbol_overrides = db.get_strategy_params_for_symbol(symbol) if symbol else {}
+    refresh_live_params(symbol)
+    effective = strategies.get_effective_params()
+    global_effective = strategies.resolve_effective_params(None, global_overrides, {})
+    params = {}
+    for key, spec in strategies.LIVE_PARAM_SPECS.items():
+        params[key] = {
+            "value": effective[key],
+            "default": spec["default"],
+            "global_value": global_effective[key],
+            "overridden_globally": key in global_overrides,
+            "overridden_for_symbol": bool(symbol) and key in symbol_overrides,
+            "label": spec["label"],
+            "group": spec["group"],
+            "min": spec["min"],
+            "max": spec["max"],
+            "step": 1 if spec["type"] is int else 0.1,
+        }
+    return jsonify({"groups": strategies.LIVE_PARAM_GROUPS, "symbol": symbol, "params": params})
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_set_settings():
+    body = request.get_json(silent=True) or {}
+    overrides = body.get("params")
+    symbol = body.get("symbol") or None
+    if symbol and symbol not in STOCK_TICKERS + [CRYPTO_SYMBOL]:
+        return jsonify({"error": f"unknown symbol: {symbol}"}), 400
+    if not isinstance(overrides, dict) or not overrides:
+        return jsonify({"error": "no parameters provided"}), 400
+    cleaned, errors = strategies.validate_params(overrides)
+    if errors:
+        return jsonify({"error": "; ".join(errors)}), 400
+    summary = ", ".join(f"{strategies.LIVE_PARAM_SPECS[k]['label']}={v}" for k, v in cleaned.items())
+    if symbol:
+        db.set_strategy_params_for_symbol(symbol, cleaned)
+        db.log_activity(symbol, f"MANUAL: {symbol}-specific strategy parameters updated via dashboard — {summary}. Takes effect next bot cycle.")
+    else:
+        db.set_strategy_params(cleaned)
+        db.log_activity(None, f"MANUAL: global strategy parameters updated via dashboard — {summary}. Takes effect next bot cycle.")
+    refresh_live_params(symbol)
+    return jsonify({"ok": True, "symbol": symbol, "params": cleaned})
+
+
+@app.route("/api/settings/reset", methods=["POST"])
+def api_reset_settings():
+    body = request.get_json(silent=True) or {}
+    symbol = body.get("symbol") or None
+    if symbol and symbol not in STOCK_TICKERS + [CRYPTO_SYMBOL]:
+        return jsonify({"error": f"unknown symbol: {symbol}"}), 400
+    if symbol:
+        db.clear_strategy_params_for_symbol(symbol)
+        db.log_activity(symbol, f"MANUAL: {symbol}-specific strategy parameters reset — now inherits the global settings. Takes effect next bot cycle.")
+    else:
+        db.clear_strategy_params()
+        db.log_activity(None, "MANUAL: global strategy parameters reset to code defaults via dashboard. Takes effect next bot cycle.")
+    refresh_live_params(symbol)
+    return jsonify({"ok": True, "symbol": symbol})
+
+
+@app.route("/api/live_status", methods=["GET"])
+def api_live_status():
+    """Backs the persistent BTC: LIVE / BTC: PAPER badge. Reads the
+    values crypto_trading_bot.py actually resolved LIVE_TRADING_ENABLED
+    and PAPER to at its own import time — not re-reading env vars here
+    — so the badge can never show something different from what the
+    bot is actually connected to."""
+    return jsonify({"crypto_live": CRYPTO_LIVE_TRADING_ENABLED, "crypto_paper": CRYPTO_PAPER})
+
+
+@app.route("/api/emergency_flatten_crypto", methods=["POST"])
+def api_emergency_flatten_crypto():
+    """Immediately cancels the crypto bot's resting protective stop and
+    market-sells the full BTC/USD position — reuses crypto_trading_
+    bot.flatten_position(), the SAME cancel-confirm-then-sell-then-
+    verify path the circuit breaker already uses, rather than a second
+    hand-rolled version of that logic. Also pauses the crypto bot
+    afterward: an emergency flatten should mean 'get out and stay out
+    until I say otherwise,' not 'get out, then buy back in next cycle'
+    — db.is_paused() is checked by the bot's own main loop, so this
+    takes effect on its very next cycle. No server-side confirmation
+    step; the dashboard's confirm() dialog IS the confirmation — this
+    acts immediately once called, on whichever account (paper or live)
+    crypto_trading_bot.py is actually connected to."""
+    qty = get_crypto_position_qty()
+    if not qty or qty <= 0:
+        return jsonify({"ok": True, "flattened": False, "message": "No open BTC/USD position to flatten."})
+    stop_order_id = db.get_position_state(CRYPTO_SYMBOL).get("stop_order_id")
+    try:
+        flatten_crypto_position(qty, stop_order_id, "MANUAL: emergency flatten via dashboard")
+    except Exception as e:
+        db.log_activity(CRYPTO_SYMBOL, f"MANUAL: emergency flatten failed — {e}")
+        return jsonify({"error": str(e)}), 500
+    db.set_paused(CRYPTO_SYMBOL, True)
+    db.log_activity(CRYPTO_SYMBOL, "MANUAL: crypto bot paused after emergency flatten — will not re-enter until manually reconnected via the dashboard.")
+    return jsonify({"ok": True, "flattened": True, "qty": qty, "paused": True})
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template_string(SETTINGS_PAGE)
 
 
 @app.route("/api/control", methods=["GET"])
@@ -907,7 +1447,17 @@ def api_chart(symbol):
 
     bars = list(reversed(bars))  # DESC fetch -> put back in chronological order
 
-    times = [b.timestamp.isoformat() for b in bars]
+    # Stripped to a naive Pacific-local ISO string (no offset suffix)
+    # rather than sent as raw UTC — Plotly has no timezone-conversion
+    # step on the client side, so it was just displaying whatever
+    # string it was given, which was UTC. Naive-but-already-converted
+    # sidesteps that entirely: no further TZ math needed anywhere.
+    # JS's own Date parsing of a naive ISO string treats it as LOCAL
+    # browser time (ECMAScript spec) — since the browser here IS on
+    # Pacific time, the existing live-candle-continuation math
+    # (resetLiveCandle(), which does `new Date(lastBarTime + …)`)
+    # keeps working correctly with no changes of its own.
+    times = [b.timestamp.astimezone(DISPLAY_TZ).replace(tzinfo=None).isoformat() for b in bars]
     opens = [float(b.open) for b in bars]
     highs = [float(b.high) for b in bars]
     lows = [float(b.low) for b in bars]
@@ -973,6 +1523,13 @@ def api_chart(symbol):
         "entry_price": entry_price, "stop_price": stop_price,
         "tf_minutes": tf_minutes,
     })
+
+
+@app.route("/api/moves/<path:symbol>")
+def api_moves(symbol):
+    """Powers the individual chart page's own Recent Moves panel —
+    that specific symbol's history only, not all four tickers'."""
+    return jsonify(get_moves_for_symbol(symbol, limit=20))
 
 
 @app.route("/api/latest/<path:symbol>")

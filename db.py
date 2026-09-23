@@ -74,11 +74,34 @@ def init_db():
         for col, coltype in (
             ("stop_price", "REAL"), ("entry_time", "TEXT"), ("peak_price", "REAL"),
             ("pending_exit_order_id", "TEXT"), ("pending_exit_cycles", "INTEGER NOT NULL DEFAULT 0"),
+            ("take_profit_order_id", "TEXT"), ("take_profit_price", "REAL"),
+            ("entry_strategy", "TEXT"), ("target1_filled", "INTEGER NOT NULL DEFAULT 0"),
+            ("original_qty", "REAL"),
         ):
             try:
                 conn.execute(f"ALTER TABLE position_state ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
                 pass  # column already exists — this file predates it
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trade_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                strategy TEXT,
+                entry_price REAL,
+                exit_price REAL,
+                qty REAL,
+                entry_time TEXT,
+                exit_time TEXT,
+                exit_reason TEXT,
+                gross_pnl REAL,
+                fees_paid REAL,
+                net_pnl REAL
+            )
+        """)
+        try:
+            conn.execute("ALTER TABLE trade_history ADD COLUMN slippage REAL")
+        except sqlite3.OperationalError:
+            pass  # column already exists — this file predates it
         conn.execute("""
             CREATE TABLE IF NOT EXISTS equity_baseline (
                 key TEXT PRIMARY KEY,
@@ -106,6 +129,22 @@ def init_db():
                 current_regime TEXT,
                 candidate_regime TEXT,
                 candidate_count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_params (
+                key TEXT PRIMARY KEY,
+                value REAL NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_params_by_symbol (
+                symbol TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value REAL NOT NULL,
+                updated_at TEXT,
+                PRIMARY KEY (symbol, key)
             )
         """)
         conn.execute("""
@@ -175,12 +214,93 @@ def set_regime_state(current_regime, candidate_regime, candidate_count):
         )
 
 
+# ---------- strategy params (live-adjustable MA lengths / ATR multipliers / macro filter) ----------
+# Only the KEYS the user has explicitly overridden from the dashboard
+# live here — anything not present falls back to strategies.py's own
+# hardcoded default (see strategies.LIVE_PARAM_SPECS). This mirrors
+# the "only override what's changed" shape of the rest of this file
+# rather than duplicating every default into the DB.
+def get_strategy_params():
+    with db_conn() as conn:
+        rows = conn.execute("SELECT key, value FROM strategy_params").fetchall()
+    return {r["key"]: r["value"] for r in rows}
+
+
+def set_strategy_params(params):
+    ts = datetime.now(timezone.utc).isoformat()
+    with db_conn() as conn:
+        for key, value in params.items():
+            conn.execute(
+                "INSERT INTO strategy_params (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, ts),
+            )
+
+
+def clear_strategy_params():
+    with db_conn() as conn:
+        conn.execute("DELETE FROM strategy_params")
+
+
+# ---------- per-symbol strategy param overrides ----------
+# Same "only overridden keys live here" shape as the global table
+# above, plus a symbol dimension. Resolution order (see
+# strategies.resolve_effective_params): code default -> global
+# override -> per-symbol override, so a per-symbol value here always
+# wins over the global table, which always wins over the hardcoded
+# default. Deliberately a SEPARATE table rather than a nullable
+# symbol column on strategy_params — no migration of existing global
+# rows needed, and "global" vs "per-symbol" stay two distinct,
+# unambiguous concepts rather than one column with a magic NULL/''
+# meaning "global".
+def get_strategy_params_for_symbol(symbol):
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM strategy_params_by_symbol WHERE symbol = ?", (symbol,)
+        ).fetchall()
+    return {r["key"]: r["value"] for r in rows}
+
+
+def set_strategy_params_for_symbol(symbol, params):
+    ts = datetime.now(timezone.utc).isoformat()
+    with db_conn() as conn:
+        for key, value in params.items():
+            conn.execute(
+                "INSERT INTO strategy_params_by_symbol (symbol, key, value, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(symbol, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (symbol, key, value, ts),
+            )
+
+
+def clear_strategy_params_for_symbol(symbol):
+    with db_conn() as conn:
+        conn.execute("DELETE FROM strategy_params_by_symbol WHERE symbol = ?", (symbol,))
+
+
+def get_all_strategy_params_by_symbol():
+    """Every per-symbol override, grouped by symbol — {symbol: {key:
+    value}}. Symbols with no overrides at all are simply absent
+    (never an empty-dict entry), so callers can tell 'never
+    customized' apart from 'customized then reset' the same way, by
+    checking membership — used by the settings page to show which
+    symbols have any per-symbol customization at a glance without a
+    separate query per symbol."""
+    with db_conn() as conn:
+        rows = conn.execute("SELECT symbol, key, value FROM strategy_params_by_symbol").fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["symbol"], {})[r["key"]] = r["value"]
+    return out
+
+
 # ---------- position state (entry price/time, stop order, peak price for trailing) ----------
 def get_position_state(symbol):
     with db_conn() as conn:
         row = conn.execute(
             "SELECT entry_price, stop_order_id, stop_price, entry_time, peak_price, "
-            "pending_exit_order_id, pending_exit_cycles FROM position_state WHERE symbol = ?",
+            "pending_exit_order_id, pending_exit_cycles, take_profit_order_id, "
+            "take_profit_price, entry_strategy, target1_filled, original_qty "
+            "FROM position_state WHERE symbol = ?",
             (symbol,),
         ).fetchone()
     if row:
@@ -192,36 +312,160 @@ def get_position_state(symbol):
             "peak_price": row["peak_price"],
             "pending_exit_order_id": row["pending_exit_order_id"],
             "pending_exit_cycles": row["pending_exit_cycles"] or 0,
+            "take_profit_order_id": row["take_profit_order_id"],
+            "take_profit_price": row["take_profit_price"],
+            "entry_strategy": row["entry_strategy"],
+            "target1_filled": bool(row["target1_filled"]),
+            "original_qty": row["original_qty"],
         }
     return {
         "entry_price": None, "stop_order_id": None, "stop_price": None, "entry_time": None,
         "peak_price": None, "pending_exit_order_id": None, "pending_exit_cycles": 0,
+        "take_profit_order_id": None, "take_profit_price": None, "entry_strategy": None,
+        "target1_filled": False, "original_qty": None,
     }
 
 
 def set_position_state(symbol, entry_price=None, stop_order_id=None, stop_price=None,
                         entry_time=None, peak_price=None, pending_exit_order_id=None,
-                        pending_exit_cycles=0):
+                        pending_exit_cycles=0, take_profit_order_id=None,
+                        take_profit_price=None, entry_strategy=None, target1_filled=False,
+                        original_qty=None):
+    """entry_strategy tags which entry path opened this position
+    ("TREND" or "SCALP" — see crypto_trading_bot.py) so the main loop
+    knows whether to run the trend-following exit stack (chandelier
+    trail, time-decay) or the scalp's fixed take-profit/stop-loss
+    reconciliation. take_profit_order_id/take_profit_price exist only
+    for scalp positions still in their pre-Target-1 phase — a trend
+    position has no take-profit order at all, same as before this
+    feature existed, and a scalp position past Target 1 clears these
+    back to None (see target1_filled). target1_filled distinguishes a
+    SCALP position's two phases: False = full size, Target-1 limit
+    sell and full-size stop both resting; True = half size remaining,
+    Target 1 already sold, now on a breakeven-adjusted stop trailing
+    with the ratcheting chandelier stop (Momentum Ratchet — see
+    strategies.chandelier_stop_price). original_qty is the qty bought
+    at entry (SCALP only) — needed to compute exactly how much sold
+    at Target 1 by subtracting the post-fill qty from it, rather than
+    assuming a clean 50/50 split (rounding on a fractional BTC qty
+    means the actual halves may not be perfectly equal). This function
+    always fully overwrites every field (no partial-patch semantics),
+    so every caller must pass its own correct value for these fields
+    rather than relying on a default — see the call sites in
+    crypto_trading_bot.py for how each is scoped to only ever touch
+    its own strategy's positions."""
     with db_conn() as conn:
         conn.execute(
             "INSERT INTO position_state "
             "(symbol, entry_price, stop_order_id, stop_price, entry_time, peak_price, "
-            "pending_exit_order_id, pending_exit_cycles) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "pending_exit_order_id, pending_exit_cycles, take_profit_order_id, "
+            "take_profit_price, entry_strategy, target1_filled, original_qty) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(symbol) DO UPDATE SET entry_price = excluded.entry_price, "
             "stop_order_id = excluded.stop_order_id, stop_price = excluded.stop_price, "
             "entry_time = excluded.entry_time, peak_price = excluded.peak_price, "
             "pending_exit_order_id = excluded.pending_exit_order_id, "
-            "pending_exit_cycles = excluded.pending_exit_cycles",
+            "pending_exit_cycles = excluded.pending_exit_cycles, "
+            "take_profit_order_id = excluded.take_profit_order_id, "
+            "take_profit_price = excluded.take_profit_price, "
+            "entry_strategy = excluded.entry_strategy, "
+            "target1_filled = excluded.target1_filled, "
+            "original_qty = excluded.original_qty",
             (symbol, entry_price, stop_order_id, stop_price, entry_time, peak_price,
-             pending_exit_order_id, pending_exit_cycles),
+             pending_exit_order_id, pending_exit_cycles, take_profit_order_id,
+             take_profit_price, entry_strategy, int(bool(target1_filled)), original_qty),
         )
 
 
 def clear_position_state(symbol):
     set_position_state(symbol, entry_price=None, stop_order_id=None, stop_price=None,
                         entry_time=None, peak_price=None, pending_exit_order_id=None,
-                        pending_exit_cycles=0)
+                        pending_exit_cycles=0, take_profit_order_id=None,
+                        take_profit_price=None, entry_strategy=None, target1_filled=False,
+                        original_qty=None)
+
+
+# ---------- trade history (fee-adjusted P&L per closed trade/partial) ----------
+# Fee estimates (0.25% taker on both entry and exit, per spec) are
+# recorded PER ROW — each partial exit (e.g. a scalp's Target 1 fill)
+# gets its own row rather than waiting for the whole position to
+# close, so a partial's realized P&L is captured accurately rather
+# than approximated later from a blended average.
+TAKER_FEE_RATE = 0.0025  # 0.25%, matches the spec's "0.25% taker entry and exit"
+
+
+def log_trade(symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time, exit_reason, slippage=None):
+    gross_pnl = (exit_price - entry_price) * qty
+    fees_paid = (entry_price + exit_price) * qty * TAKER_FEE_RATE
+    net_pnl = gross_pnl - fees_paid
+    with db_conn() as conn:
+        conn.execute(
+            "INSERT INTO trade_history "
+            "(symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time, "
+            "exit_reason, gross_pnl, fees_paid, net_pnl, slippage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (symbol, strategy, entry_price, exit_price, qty, entry_time, exit_time,
+             exit_reason, gross_pnl, fees_paid, net_pnl, slippage),
+        )
+    return {"gross_pnl": gross_pnl, "fees_paid": fees_paid, "net_pnl": net_pnl, "slippage": slippage}
+
+
+def get_recent_trades(symbol=None, limit=50):
+    with db_conn() as conn:
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM trade_history WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                (symbol, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM trade_history ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_profit_factor(symbol=None, limit=200):
+    """gross profit / gross loss over the last `limit` closed trades
+    (net-of-fees), the standard profit-factor definition. Returns None
+    if there are no losing trades yet (undefined/infinite) or no
+    trades at all — callers should treat None as 'not enough data',
+    never as 0 or a bad value."""
+    trades = get_recent_trades(symbol=symbol, limit=limit)
+    if not trades:
+        return None
+    gross_profit = sum(t["net_pnl"] for t in trades if t["net_pnl"] > 0)
+    gross_loss = -sum(t["net_pnl"] for t in trades if t["net_pnl"] < 0)
+    if gross_loss == 0:
+        return None
+    return gross_profit / gross_loss
+
+
+def get_avg_slippage(symbol=None, limit=50):
+    """Average per-trade slippage over the last `limit` closed trades
+    (same symbol/limit scoping as get_recent_trades(), via a subquery
+    so LIMIT applies to the row set being averaged, not to the single
+    aggregate result row). SQL's AVG() ignores NULLs on its own, so
+    trades logged before the slippage column existed (or any exit
+    path that still passes slippage=None) are automatically excluded
+    rather than pulling the average toward zero. Returns None if there
+    are no trades at all, or if every trade in the window has a NULL
+    slippage — both read the same to a caller: 'no slippage data to
+    report', never a fabricated 0.0."""
+    with db_conn() as conn:
+        if symbol:
+            row = conn.execute(
+                "SELECT AVG(slippage) AS avg_slippage FROM ("
+                "SELECT slippage FROM trade_history WHERE symbol = ? ORDER BY id DESC LIMIT ?"
+                ")",
+                (symbol, limit),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT AVG(slippage) AS avg_slippage FROM ("
+                "SELECT slippage FROM trade_history ORDER BY id DESC LIMIT ?"
+                ")",
+                (limit,),
+            ).fetchone()
+    return row["avg_slippage"] if row and row["avg_slippage"] is not None else None
 
 
 # ---------- daily equity baseline / circuit breaker / EOD flatten ----------
