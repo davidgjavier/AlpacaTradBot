@@ -1,0 +1,499 @@
+From a190fef25399abd7f078b80c6d8a3fe7a602a3ef Mon Sep 17 00:00:00 2001
+From: "Claude (review)" <review@localhost>
+Date: Wed, 23 Sep 2026 09:01:29 -0700
+Subject: [PATCH 2/2] P8 round 3b: evidence quality gates human resolution;
+ persistent uniqueness uncertainty
+
+- reconcile() reports evidence: POSITIVE / NEGATIVE_COMPLETE (structured 404
+  AND complete bounded scan) / INCOMPLETE. force_scan for human checks.
+- abandon() and release_entry_lock() require a persisted NEGATIVE_COMPLETE
+  fresh check; unavailable, failed, truncated, bounded or stuck evidence is
+  refused. Lock, history and monitoring preserved. NEGATIVE_COMPLETE is not
+  proof of absence; human-resolution policy remains unapproved.
+- New ACCEPTED_UNVERIFIED: order known but uniqueness unconfirmed; monitored,
+  entries locked, re-scanned every cycle, survives restart; not abandonable.
+- History events recorded only on real state changes.
+
+Tests: round3b 19 (13 fail on 83ef87c; 19 pass); round3 21, round2 15,
+existing 30 all pass unchanged (85/85). Codex reproduction (verbatim) now:
+abandon/release refused, lock held.
+Round-4 timeout hardening and paper-plan corrections remain OPEN.
+---
+ review/p8_sdk_transport/ROUND3B_REVIEW.md     | 91 +++++++++++++++++
+ review/p8_sdk_transport/ROUND3_REVIEW.md      |  3 +
+ review/p8_sdk_transport/proposed/broker_io.py | 97 ++++++++++++++-----
+ .../codex_reproduction_before_after.txt       |  3 +
+ .../round3b_evidence/test_broker_io_AFTER.txt | 38 ++++++++
+ .../round3b_evidence/test_p8_round2_AFTER.txt | 25 +++++
+ .../round3b_evidence/test_p8_round3_AFTER.txt | 27 ++++++
+ .../test_p8_round3b_AFTER.txt                 | 27 ++++++
+ 8 files changed, 288 insertions(+), 23 deletions(-)
+ create mode 100644 review/p8_sdk_transport/ROUND3B_REVIEW.md
+ create mode 100644 review/p8_sdk_transport/round3b_evidence/codex_reproduction_before_after.txt
+ create mode 100644 review/p8_sdk_transport/round3b_evidence/test_broker_io_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/round3b_evidence/test_p8_round2_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/round3b_evidence/test_p8_round3_AFTER.txt
+ create mode 100644 review/p8_sdk_transport/round3b_evidence/test_p8_round3b_AFTER.txt
+
+diff --git a/review/p8_sdk_transport/ROUND3B_REVIEW.md b/review/p8_sdk_transport/ROUND3B_REVIEW.md
+new file mode 100644
+index 0000000..b8635f9
+--- /dev/null
++++ b/review/p8_sdk_transport/ROUND3B_REVIEW.md
+@@ -0,0 +1,91 @@
++# P8 wrapper — Round 3b: evidence quality in human resolution; persistent uniqueness uncertainty
++
++- **Branch:** `review/p8-sdk-wrapper` · Offline only; nothing wired into any bot, deployed, or broker-connected.
++- **Commits:**
++  - `27ed154` — tests only, including Codex's reproduction
++  - *fix commit* — see `git log`
++- **Baseline for "before":** `83ef87c` (round-3 fix `344dcb2`).
++- **Codex reproduction used verbatim:**
++  `…/work/p8_round3_review/reviewer_reproduction.py` (sha256 prefix `4de046470390e4db`).
++  Codex's copy of the wrapper and tests was byte-identical to `83ef87c`.
++
++## Verdicts (tested scope only)
++
++| Item | Reproduced on baseline | Verdict |
++|---|---|---|
++| **Codex case:** all broker reads fail, yet abandon → ABANDONED and release → lock false | Yes | **Fixed.** Every reconcile reports `evidence`: `POSITIVE`, `NEGATIVE_COMPLETE` (structured 404 **and** a complete bounded scan with no match), or `INCOMPLETE`. Abandon and release force the scan and require `NEGATIVE_COMPLETE` **and** a persisted fresh check. Verbatim script after the fix: abandon and release both refused (UNRESOLVED), **lock still held** |
++| Failed, truncated, bounded or stuck pagination during human checks | Yes (4 cases) | **Fixed.** Each is `INCOMPLETE`, so the action is refused. History, monitoring and the lock are preserved |
++| Fresh check not persistable; operator write failure | Fresh-check case reproduced; write-failure cases already safe | **Fixed / guarded.** A fresh check with `persisted=False` refuses the action. A failed operator write keeps state, lock and history |
++| ACCEPTED with `uniqueness_verified=False` left monitoring and cleared the lock | Yes (4 cases, including restart) | **Fixed.** New state **`ACCEPTED_UNVERIFIED`**: the order id is known, but a complete scan hasn't confirmed uniqueness. It's monitored, locks entries, is re-scanned every cycle, and survives restarts. A later complete scan gives `ACCEPTED`; a found duplicate or mismatch gives `CONFLICT`. It can't be abandoned |
++| Operator actions racing reconciliation or a new order | Already safe on baseline (compare-and-set) | **Guarded by tests.** Abandon racing a concurrent discovery doesn't overwrite; release racing a late-order CONFLICT doesn't release |
++
++**Important limit, stated plainly:** `NEGATIVE_COMPLETE` is a *successful negative observation*, not proof
++that exposure is absent. It is only a precondition that lets an operator decision be recorded. The
++proposed human-resolution policy (ROUND3_REVIEW.md) remains **UNAPPROVED**. Its 24 h / 1 h waits are
++**not implemented** and are not treated as evidence.
++
++## Tests (identical fixtures before and after)
++
++| Suite | Before (`83ef87c`) | After |
++|---|---|---|
++| `test_p8_round3b.py` (19) | **13 fail**, 6 pass | **19 pass** |
++| `test_p8_round3.py` (21) | 21 pass | 21 pass |
++| `test_p8_round2.py` (15) | 15 pass | 15 pass |
++| `test_broker_io.py` (30) | 30 pass | 30 pass |
++
++- **Total after:** 85/85.
++- **Changed expectations: none** this round.
++- **The 6 baseline passes are guards:**
++  - the successful-negative control (abandon, then release, still works);
++  - release write failure;
++  - abandon write failure;
++  - abandon racing a discovery;
++  - release racing a late order;
++  - a later complete scan resolves to ACCEPTED. This one is trivial on the baseline, which never held
++    the order in the first place.
++- Evidence: `round3b_evidence/`.
++
++## State model delta
++
++| State | Monitored | Entries locked | Exits |
++|---|---|---|---|
++| **ACCEPTED_UNVERIFIED** (new) | yes | yes | complete scan with one match → ACCEPTED; >1 or mismatch → CONFLICT. No operator exit (not abandonable) |
++
++Abandon (from UNRESOLVED) and release (from ABANDONED) additionally require the fresh check's
++`evidence == NEGATIVE_COMPLETE` and `persisted == True`.
++
++## Caller requirements (delta)
++
++- Treat `ACCEPTED_UNVERIFIED` as "order exists" for position logic, **and** keep entries locked (via
++  `entries_locked()`).
++- Read `SubmitResult.evidence`. Only `NEGATIVE_COMPLETE` is a successful negative observation, and even
++  that isn't proof of absence.
++
++## Remaining risks (open)
++
++- **Inherent broker race:** between a `NEGATIVE_COMPLETE` check and the operator write, an order can
++  appear at the broker without any local caller having recorded it. Abandon or release then succeeds.
++  Only continued monitoring (late order → CONFLICT, re-lock) mitigates this. No local mechanism can
++  close it.
++- **Liveness:** on a busy account where the 3-page bound is always hit, `ACCEPTED_UNVERIFIED` never
++  becomes `ACCEPTED`, and there's no human path for it (by design this round). Needs a reviewed
++  resolution workflow, like CONFLICT.
++- **Load:** a forced scan on every human action; a re-scan every cycle for `ACCEPTED_UNVERIFIED`.
++- **Carried open:**
++  - normalization assumptions (unverified until P3);
++  - CONFLICT resolution workflow;
++  - intent ↔ accounting integration with Codex `cbf1b9b`;
++  - broker behavior unobserved;
++  - human-resolution policy **unapproved**.
++- **Timeout hardening (round 4): OPEN.** Design constraint recorded for that round: *timing out a
++  thread join does not cancel the in-flight HTTP request.* The request can still complete late, so a
++  submit abandoned at the deadline must be treated as UNRESOLVED (never "not sent"), and the late
++  response must not mutate state out of order.
++- **Paper-plan corrections: OPEN.** P7-RO (read-only) and P3 (submits orders) remain separate, pending
++  decisions.
++
++## Next bounded task (proposal)
++
++Round 4 (offline): timeout/deadline hardening under the constraint above. Cover wall-clock budgets,
++late completion after deadline, `read()` never exceeding its budget, and loopback slow-drip and
++stalled-connect tests.
+diff --git a/review/p8_sdk_transport/ROUND3_REVIEW.md b/review/p8_sdk_transport/ROUND3_REVIEW.md
+index 002fd89..a9be380 100644
+--- a/review/p8_sdk_transport/ROUND3_REVIEW.md
++++ b/review/p8_sdk_transport/ROUND3_REVIEW.md
+@@ -1,5 +1,8 @@
+ # P8 wrapper — Round 3: unreadable history, identity, duplicates, pagination, human resolution
+ 
++> **Status update (round 3b):** the human-resolution policy below remains **UNAPPROVED**. Its 24 h / 1 h waits are unvalidated proposals, are **not implemented**, and are not evidence of absence. Abandon/release now also require a persisted `NEGATIVE_COMPLETE` fresh check. `ACCEPTED` with unverified uniqueness is now `ACCEPTED_UNVERIFIED` (monitored, locked). See `ROUND3B_REVIEW.md`.
++
++
+ - **Branch:** `review/p8-sdk-wrapper` · Offline only; nothing wired into any bot or deployed.
+ - **Commits:**
+   - `a15ade0` — tests only
+diff --git a/review/p8_sdk_transport/proposed/broker_io.py b/review/p8_sdk_transport/proposed/broker_io.py
+index b45cc96..02ff719 100644
+--- a/review/p8_sdk_transport/proposed/broker_io.py
++++ b/review/p8_sdk_transport/proposed/broker_io.py
+@@ -216,12 +216,17 @@ INTENT_MIGRATIONS = [("acknowledged_by", "TEXT"), ("acknowledged_ns", "INTEGER")
+ #   ABANDONED   operator declared the intent abandoned; STILL monitored for a late order;
+ #               entries stay locked until a separate, explicit release_entry_lock()
+ # Transitions are compare-and-set and every one appends to intent_events (history is never erased).
+-PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW", "CONFLICT", "ABANDONED")
++#   ACCEPTED_UNVERIFIED (round 3b)  one identity-matching broker order is known, but a COMPLETE
++#               bounded scan has not yet confirmed it is the only order for the client id.
++#               Monitored; entries locked; re-scanned every cycle; persists across restarts.
++PENDING_STATES = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW", "CONFLICT", "ABANDONED",
++                  "ACCEPTED_UNVERIFIED")
+ _OPEN = ("SUBMITTING", "UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")
+-_ALLOWED_FROM = {"ACCEPTED": _OPEN,
++_ALLOWED_FROM = {"ACCEPTED": _OPEN + ("ACCEPTED_UNVERIFIED",),
++                 "ACCEPTED_UNVERIFIED": _OPEN + ("ACCEPTED_UNVERIFIED",),
+                  "REJECTED": ("SUBMITTING",),
+                  "UNRESOLVED": _OPEN,
+-                 "CONFLICT": _OPEN + ("ABANDONED",),
++                 "CONFLICT": _OPEN + ("ABANDONED", "ACCEPTED_UNVERIFIED"),
+                  "ABANDONED": ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW")}
+ 
+ 
+@@ -284,7 +289,7 @@ class IntentStore:
+         with closing(self._c()) as c:
+             return [r[0] for r in c.execute(
+                 "SELECT client_order_id FROM order_intents WHERE symbol=? AND ("
+-                " state IN ('SUBMITTING','UNRESOLVED','NOT_FOUND_AFTER_WINDOW','CONFLICT')"
++                " state IN ('SUBMITTING','UNRESOLVED','NOT_FOUND_AFTER_WINDOW','CONFLICT','ACCEPTED_UNVERIFIED')"
+                 " OR (state='ABANDONED' AND lock_released_ns IS NULL))", (symbol,))]
+ 
+     def events(self, cid: str) -> list:
+@@ -323,7 +328,7 @@ class IntentStore:
+                           " conflict_detail=COALESCE(?,conflict_detail)"
+                           " WHERE client_order_id=? AND state IN (%s)%s" % (",".join("?" * len(src)), extra),
+                           (to_state, order_id, error, now_ns, conflict_detail, cid) + src).rowcount
+-            if n == 1 and (frm != to_state or to_state != "UNRESOLVED"):
++            if n == 1 and frm != to_state:          # same-state refreshes update the row, not history
+                 self._event(c, cid, now_ns, "TRANSITION", frm, to_state, detail=conflict_detail or error)
+             return n == 1
+         return self._txn(f"mark_{to_state}", fn)
+@@ -467,10 +472,17 @@ class SubmitResult:
+     broker_order_ids: list = field(default_factory=list)
+     mismatches: list = field(default_factory=list)
+     uniqueness_verified: Optional[bool] = None
++    # Evidence quality of THIS call's broker check (round 3b):
++    #   POSITIVE           a broker order for the id was observed
++    #   NEGATIVE_COMPLETE  structured 404 on the by-id lookup AND a complete bounded scan with no match.
++    #                      A successful negative observation. Still NOT proof that exposure is absent.
++    #   INCOMPLETE         any read failed/unavailable, the scan was truncated, bounded, stuck or not run
++    #   NOT_CHECKED        no broker check was made (e.g. already terminal, or store unreadable)
++    evidence: str = "NOT_CHECKED"
+ 
+     @property
+     def exposure_may_exist(self) -> bool:
+-        return self.state in ("ACCEPTED", "UNRESOLVED", "CONFLICT", "ABANDONED")
++        return self.state in ("ACCEPTED", "ACCEPTED_UNVERIFIED", "UNRESOLVED", "CONFLICT", "ABANDONED")
+ 
+ 
+ class OrderGateway:
+@@ -587,7 +599,7 @@ class OrderGateway:
+                                 broker_order_ids=[oid], detail=detail, persisted=ok, persistence_error=perr)
+         applied, ok, perr = self._record(cid, "ACCEPTED", order_id=oid)
+         return SubmitResult("ACCEPTED", cid, order_id=oid, order=order, posts_this_call=1, broker_order_ids=[oid],
+-                            persisted=ok, persistence_error=perr,
++                            persisted=ok, persistence_error=perr, evidence="POSITIVE",
+                             detail="" if ok else "accepted; result NOT saved (row stays in recovery queue)")
+ 
+     # ---------------------------------------------------------------- evidence
+@@ -622,10 +634,14 @@ class OrderGateway:
+             cursor = max(stamps) - timedelta(microseconds=1)
+         return ScanResult(matches, False, f"page bound {self.scan_max_pages} reached", self.scan_max_pages)
+ 
+-    def reconcile(self, cid) -> SubmitResult:
+-        """Resolve an intent from broker evidence. Only POSITIVE, identity-matching evidence of
+-        exactly one order resolves an open intent to ACCEPTED. Negative evidence never resolves
+-        anything. CONFLICT and ABANDONED are re-checked (late orders) but never auto-cleared."""
++    def reconcile(self, cid, force_scan: bool = False) -> SubmitResult:
++        """Resolve an intent from broker evidence and report the evidence quality.
++
++        Only POSITIVE, identity-matching evidence of exactly one order moves an open intent forward:
++        to ACCEPTED if a COMPLETE bounded scan confirms uniqueness, else to ACCEPTED_UNVERIFIED
++        (still monitored and locked). Negative evidence never resolves anything. CONFLICT and
++        ABANDONED are re-checked (late orders) but never auto-cleared. force_scan=True runs the
++        bounded scan even inside the visibility window (human-resolution checks)."""
+         row, err = self._row(cid)
+         if err:
+             return SubmitResult("UNRESOLVED", cid, detail=err, persisted=False, persistence_error=err)
+@@ -641,15 +657,26 @@ class OrderGateway:
+             how.append("found by client id")
+         aged = self.now_ns() - (row["last_submit_ns"] or row["created_ns"]) >= self.window_ns
+         scan = None
+-        if candidates or aged:                      # uniqueness check, or positive evidence after the window
++        if candidates or aged or force_scan or row["state"] == "ACCEPTED_UNVERIFIED":
+             scan = self._scan(cid, row)
+             for o in scan.matches:
+                 if str(o.id) not in candidates:
+                     candidates[str(o.id)] = o
+                     if "found by list" not in how:
+                         how.append("found by list")
+-        ids = sorted(candidates)
++        if candidates:
++            evidence = "POSITIVE"
++        elif r.state == "NOT_FOUND" and scan is not None and scan.complete:
++            evidence = "NEGATIVE_COMPLETE"
++        else:
++            evidence = "INCOMPLETE"
+         scan_note = f"scan: {scan.reason}, {scan.pages} page(s)" if scan else "scan: not run"
++        out = self._reconcile_decide(cid, row, intent, r, candidates, how, scan, scan_note)
++        out.evidence = evidence
++        return out
++
++    def _reconcile_decide(self, cid, row, intent, r, candidates, how, scan, scan_note) -> SubmitResult:
++        ids = sorted(candidates)
+         if len(ids) > 1:
+             return self._conflict(cid, row, f"{len(ids)} broker orders share this client id: {', '.join(ids)}",
+                                   ids=ids)
+@@ -662,16 +689,21 @@ class OrderGateway:
+                 return self._conflict(cid, row, f"late order {ids[0]} appeared after abandonment", ids=ids)
+             if row["state"] == "CONFLICT":
+                 return self._from_row(cid, detail="conflict persists; human resolution required")
+-            applied, ok, perr = self._record(cid, "ACCEPTED", order_id=ids[0])
+-            if ok and not applied:
++            verified = bool(scan and scan.complete)
++            target = "ACCEPTED" if verified else "ACCEPTED_UNVERIFIED"
++            note = " + ".join(how) if len(how) == 1 else "; ".join(how)
++            if not verified:
++                note += f"; uniqueness NOT verified ({scan_note}); remains monitored and entries locked"
++            applied, ok, perr = self._record(cid, target, order_id=ids[0],
++                                             error=None if verified else note)
++            if ok and not applied and row["state"] != target:
+                 return self._from_row(cid, detail="state changed concurrently")
+-            uniq = scan.complete if scan and scan.complete is not None else None
+-            return SubmitResult("ACCEPTED", cid, order_id=ids[0], order=o, broker_order_ids=ids,
+-                                detail=" + ".join(how) if len(how) == 1 else "; ".join(how),
+-                                uniqueness_verified=uniq, persisted=ok, persistence_error=perr)
++            return SubmitResult(target, cid, order_id=ids[0], order=o, broker_order_ids=ids, detail=note,
++                                uniqueness_verified=verified, persisted=ok, persistence_error=perr)
+         # No positive evidence.
+-        if row["state"] in ("CONFLICT", "ABANDONED"):
+-            return self._from_row(cid, detail=f"no new broker evidence; still {row['state']} ({scan_note})")
++        if row["state"] in ("CONFLICT", "ABANDONED", "ACCEPTED_UNVERIFIED"):
++            return self._from_row(cid, detail=f"no new broker evidence; still {row['state']} "
++                                              f"(lookup {r.state}; {scan_note})")
+         why = {"NOT_FOUND": "no broker evidence yet (NOT proof of absence)",
+                "UNAVAILABLE": "lookup UNAVAILABLE", "ERROR": f"lookup ERROR: {r.error}"}.get(r.state, r.state)
+         why = f"{why}; {scan_note}"
+@@ -730,6 +762,17 @@ class OrderGateway:
+         if not operator or not str(operator).strip() or not note or not str(note).strip():
+             raise ValueError("operator and note are required for human-resolution actions")
+ 
++    @staticmethod
++    def _negative_check_refusal(fresh: SubmitResult) -> Optional[str]:
++        """Human-resolution actions need a SUCCESSFUL negative observation that was also recorded.
++        Unavailable, failed, truncated, bounded or stuck evidence is not a negative observation.
++        Even NEGATIVE_COMPLETE is only a precondition for an operator decision, not proof of absence."""
++        if fresh.evidence != "NEGATIVE_COMPLETE":
++            return f"broker evidence {fresh.evidence}, not a complete negative observation"
++        if not fresh.persisted:
++            return f"fresh check could not be persisted ({fresh.persistence_error})"
++        return None
++
+     def acknowledge(self, cid, operator: str, note: str) -> SubmitResult:
+         """Operator has SEEN the unresolved intent. Changes no state, releases no lock, stops no
+         monitoring. Recorded in history."""
+@@ -751,10 +794,14 @@ class OrderGateway:
+         row, err = self._row(cid)
+         if err or row is None or row["state"] not in ("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"):
+             return self._from_row(cid, detail="abandon refused: only UNRESOLVED intents can be abandoned")
+-        fresh = self.reconcile(cid)
++        fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "UNRESOLVED":
+             fresh.detail = f"abandon refused: fresh check returned {fresh.state}; {fresh.detail}"
+             return fresh
++        refusal = self._negative_check_refusal(fresh)
++        if refusal:
++            fresh.detail = f"abandon refused: {refusal}; {fresh.detail}"
++            return fresh
+         try:
+             ok = self.store.operator_action(cid, "ABANDONED", operator, note, self.now_ns(),
+                                             require_state=("UNRESOLVED", "NOT_FOUND_AFTER_WINDOW"),
+@@ -773,10 +820,14 @@ class OrderGateway:
+         row, err = self._row(cid)
+         if err or row is None or row["state"] != "ABANDONED":
+             return self._from_row(cid, detail="release refused: intent is not ABANDONED")
+-        fresh = self.reconcile(cid)
++        fresh = self.reconcile(cid, force_scan=True)
+         if fresh.state != "ABANDONED":
+             fresh.detail = f"release refused: fresh check returned {fresh.state}; {fresh.detail}"
+             return fresh
++        refusal = self._negative_check_refusal(fresh)
++        if refusal:
++            fresh.detail = f"release refused (lock HELD): {refusal}; {fresh.detail}"
++            return fresh
+         try:
+             ok = self.store.operator_action(cid, "LOCK_RELEASED", operator, note, self.now_ns(),
+                                             require_state=("ABANDONED",),
+diff --git a/review/p8_sdk_transport/round3b_evidence/codex_reproduction_before_after.txt b/review/p8_sdk_transport/round3b_evidence/codex_reproduction_before_after.txt
+new file mode 100644
+index 0000000..2d60bf1
+--- /dev/null
++++ b/review/p8_sdk_transport/round3b_evidence/codex_reproduction_before_after.txt
+@@ -0,0 +1,3 @@
++# Codex reviewer_reproduction.py (sha256 4de046470390e4db), run verbatim
++BEFORE (83ef87c): abandon=ABANDONED locked_before=true release=ABANDONED locked_after=false
++AFTER (fix): {"abandon_state":"UNRESOLVED","locked_before_release":true,"release_state":"UNRESOLVED","locked_after_release":true,"broker_reads":"allfailed"}
+diff --git a/review/p8_sdk_transport/round3b_evidence/test_broker_io_AFTER.txt b/review/p8_sdk_transport/round3b_evidence/test_broker_io_AFTER.txt
+new file mode 100644
+index 0000000..f2110a7
+--- /dev/null
++++ b/review/p8_sdk_transport/round3b_evidence/test_broker_io_AFTER.txt
+@@ -0,0 +1,38 @@
++# test_broker_io vs round-3b FIX, 2026-09-23 09:01 AM PDT
++test_fails_closed_on_version_or_missing_attrs (test_broker_io.A_Configuration) ... ok
++test_gateway_refuses_unconfigured_client (test_broker_io.A_Configuration) ... ok
++test_retries_disabled_and_timeout_reaches_transport (test_broker_io.A_Configuration) ... ok
++test_429_is_not_blindly_retried (test_broker_io.B_SubmissionOutcomes) ... ok
++test_504_no_sdk_retry_single_post_unresolved (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_read_timeout_and_reset_reconciled (test_broker_io.B_SubmissionOutcomes) ... ok
++test_accepted_response_lost_504_reconciled_one_order (test_broker_io.B_SubmissionOutcomes) ... ok
++test_connect_timeout_never_accepted_stays_unresolved_no_repost (test_broker_io.B_SubmissionOutcomes) ... ok
++test_definitive_403_rejected (test_broker_io.B_SubmissionOutcomes) ... ok
++test_missing_client_id_refused_before_any_post (test_broker_io.B_SubmissionOutcomes) ... ok
++test_non_json_504_does_not_crash_and_is_ambiguous (test_broker_io.B_SubmissionOutcomes) ... ok
++test_repeated_submit_same_id_never_reposts (test_broker_io.B_SubmissionOutcomes) ... ok
++test_same_id_different_payload_refused (test_broker_io.B_SubmissionOutcomes) ... ok
++test_intent_write_failure_means_no_post (test_broker_io.C_Persistence) ... ok
++test_record_failure_after_accepted_post_is_recovered (test_broker_io.C_Persistence) ... ok
++test_crash_after_accepted_post_restart_reconciles_without_post (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_crash_before_post_restart_then_window_list_then_single_resubmit (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_delayed_visibility_found_by_list_after_window (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_list_unavailable_keeps_unresolved_never_absent (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_lookup_unavailable_is_not_not_found (test_broker_io.D_ReconcileAndResubmit) ... ok
++test_bounded_by_deadline_and_attempts (test_broker_io.E_Reads) ... ok
++test_cancel_204_is_request_accepted_not_terminal_and_422 (test_broker_io.E_Reads) ... ok
++test_free_text_not_found_is_unavailable (test_broker_io.E_Reads) ... ok
++test_non_retryable_4xx_is_error (test_broker_io.E_Reads) ... ok
++test_structured_404_is_not_found_without_retry (test_broker_io.E_Reads) ... ok
++test_transient_then_ok (test_broker_io.E_Reads) ... ok
++test_silent_server_raises_read_timeout_instead_of_hanging (test_broker_io.F_RealSocketTimeout) ... ok
++test_two_processes_one_logical_order (test_broker_io.G_FreshProcessRestart) ... ok
++test_stage_a_still_duplicates_posts_documented_risk (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++test_timeouts_applied_sdk_retries_kept_and_worst_case_bounded (test_broker_io.H_StageA_TimeoutsOnly) ... ok
++
++----------------------------------------------------------------------
++Ran 30 tests in 3.120s
++
++OK
++
++    real read timeout fired after 1.50s (limit 1.5s read)
+diff --git a/review/p8_sdk_transport/round3b_evidence/test_p8_round2_AFTER.txt b/review/p8_sdk_transport/round3b_evidence/test_p8_round2_AFTER.txt
+new file mode 100644
+index 0000000..4e66a92
+--- /dev/null
++++ b/review/p8_sdk_transport/round3b_evidence/test_p8_round2_AFTER.txt
+@@ -0,0 +1,25 @@
++# test_p8_round2 vs round-3b FIX, 2026-09-23 09:01 AM PDT
++test_concurrent_first_submit_same_id_single_post_no_exception (test_p8_round2.F1_ConcurrentCallers) ... ok
++test_concurrent_resubmit_never_double_posts (test_p8_round2.F1_ConcurrentCallers)
++Finding 1. Two callers both reconcile past the window, then both resubmit. ... ok
++test_stale_reconcile_cannot_downgrade_accepted (test_p8_round2.F1_ConcurrentCallers)
++Caller A's lookup is slow and returns 404; caller B finds the order and records ... ok
++test_later_422_does_not_mark_rejected_or_stop_reconciliation (test_p8_round2.F2_DuplicateIdRejectionAfterAmbiguous)
++Finding 2. First POST accepted but hidden (504). After the window, a resubmit with ... ok
++test_delayed_visibility_beyond_window_no_resubmit (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_even_full_negative_evidence_does_not_authorize_resubmit (test_p8_round2.F3_AbsenceIsNotProven)
++Policy for this round: no automatic resubmission of ambiguous intents at all. ... ok
++test_truncated_listing_is_not_proof_of_absence (test_p8_round2.F3_AbsenceIsNotProven) ... ok
++test_every_accepted_result_carries_the_stored_order_id (test_p8_round2.F4_RecoveredIdentity) ... ok
++test_accepted_then_record_fails_returns_known_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_then_record_fails_returns_unresolved_not_exception (test_p8_round2.F5_PersistenceFailure) ... ok
++test_intent_write_failure_returns_not_submitted_zero_posts (test_p8_round2.F5_PersistenceFailure) ... ok
++test_reconcile_found_but_record_fails_still_returns_identity (test_p8_round2.F5_PersistenceFailure) ... ok
++test_ambiguous_post_then_store_reads_fail_returns_unresolved (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_pre_post_read_failure_is_not_submitted (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++test_rejected_post_then_store_reads_fail_still_no_exception (test_p8_round2.F5b_StoreReadFailureAfterPost) ... ok
++
++----------------------------------------------------------------------
++Ran 15 tests in 0.516s
++
++OK
+diff --git a/review/p8_sdk_transport/round3b_evidence/test_p8_round3_AFTER.txt b/review/p8_sdk_transport/round3b_evidence/test_p8_round3_AFTER.txt
+new file mode 100644
+index 0000000..47aa0ea
+--- /dev/null
++++ b/review/p8_sdk_transport/round3b_evidence/test_p8_round3_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3 vs round-3b FIX, 2026-09-23 09:01 AM PDT
++test_readable_empty_history_and_insert_failure_is_not_submitted_control (test_p8_round3.G1_UnreadableHistory) ... ok
++test_resubmit_call_with_unreadable_store_is_not_not_submitted (test_p8_round3.G1_UnreadableHistory) ... ok
++test_unreadable_store_and_broker_unavailable_stays_unresolved (test_p8_round3.G1_UnreadableHistory) ... ok
++test_broker_normalization_still_matches (test_p8_round3.G2_IdentityValidation) ... ok
++test_limit_price_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_amount_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_but_broker_reports_only_qty_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_notional_intent_matches_on_notional_not_qty (test_p8_round3.G2_IdentityValidation) ... ok
++test_qty_mismatch_is_conflict (test_p8_round3.G2_IdentityValidation) ... ok
++test_side_mismatch_is_conflict_not_accepted (test_p8_round3.G2_IdentityValidation) ... ok
++test_two_broker_orders_share_our_client_id_is_conflict (test_p8_round3.G3_DuplicateClientIds) ... ok
++test_exhausted_page_bound_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_order_on_page_three_is_found_by_bounded_scan (test_p8_round3.G4_BoundedPagination) ... ok
++test_page_failure_is_not_absence (test_p8_round3.G4_BoundedPagination) ... ok
++test_abandon_keeps_history_monitoring_and_entry_lock (test_p8_round3.G5_HumanResolution) ... ok
++test_abandon_refused_when_fresh_check_finds_the_order (test_p8_round3.G5_HumanResolution) ... ok
++test_acknowledge_changes_nothing_but_the_record (test_p8_round3.G5_HumanResolution) ... ok
++test_conflict_cannot_be_abandoned (test_p8_round3.G5_HumanResolution) ... ok
++test_late_order_after_abandon_becomes_conflict_and_relocks (test_p8_round3.G5_HumanResolution) ... ok
++test_release_requires_abandoned_and_is_explicit (test_p8_round3.G5_HumanResolution) ... ok
++test_resubmission_still_disabled (test_p8_round3.G5_HumanResolution) ... ok
++
++----------------------------------------------------------------------
++Ran 21 tests in 0.858s
++
++OK
+diff --git a/review/p8_sdk_transport/round3b_evidence/test_p8_round3b_AFTER.txt b/review/p8_sdk_transport/round3b_evidence/test_p8_round3b_AFTER.txt
+new file mode 100644
+index 0000000..a14d02d
+--- /dev/null
++++ b/review/p8_sdk_transport/round3b_evidence/test_p8_round3b_AFTER.txt
+@@ -0,0 +1,27 @@
++# test_p8_round3b vs round-3b FIX, 2026-09-23 09:01 AM PDT
++test_abandon_refused_when_fresh_check_cannot_be_persisted (test_p8_round3b.A_EvidenceQuality) ... ok
++test_codex_reproduction_all_reads_fail (test_p8_round3b.A_EvidenceQuality)
++Verbatim scenario of work/p8_round3_review/reviewer_reproduction.py. ... ok
++test_control_successful_negative_observation_allows_abandon_and_release (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_negative_but_listing_fails_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_lookup_unavailable_even_with_complete_listing_refuses_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_refused_when_broker_reads_fail_after_abandon (test_p8_round3b.A_EvidenceQuality) ... ok
++test_release_write_failure_keeps_lock_and_history (test_p8_round3b.A_EvidenceQuality) ... ok
++test_later_complete_scan_resolves_to_accepted_and_unlocks (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_later_scan_finding_duplicate_is_conflict (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_uncertainty_survives_restart (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_order_cannot_be_abandoned (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_unverified_uniqueness_stays_monitored_and_locked (test_p8_round3b.B_UniquenessUncertaintyPersists) ... ok
++test_abandon_operator_write_failure_keeps_state_and_lock (test_p8_round3b.C_Races) ... ok
++test_abandon_racing_newly_discovered_order (test_p8_round3b.C_Races)
++Abandon's fresh check sees nothing; before its write, another caller discovers the ... ok
++test_release_racing_late_order (test_p8_round3b.C_Races) ... ok
++test_page_bound_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_page_failure_refuses_release (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++test_stuck_pagination_refuses_abandon (test_p8_round3b.D_PaginationDuringHumanChecks) ... ok
++
++----------------------------------------------------------------------
++Ran 19 tests in 1.547s
++
++OK
+-- 
+2.54.0 (Apple Git-157)
+
