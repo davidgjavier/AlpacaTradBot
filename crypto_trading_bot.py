@@ -656,12 +656,18 @@ def verify_sell_filled(qty_before, timeout_s=5, poll_s=0.5):
     (0.0 if fully filled) — callers should keep tracking the position
     if this comes back > 0 rather than blindly clearing state, so a
     partial fill can't leave an untracked, unprotected residual."""
+    # P0-2/P0-4: an unreadable position is NOT "sold". get_position_qty() maps
+    # every error to 0.0, which used to clear state (and drop protection) for a
+    # position that may still be held. Only a strict read counts; if no read
+    # succeeds before the deadline, report the full qty as still held.
     deadline = time.time() + timeout_s
     remaining = qty_before
     while time.time() < deadline:
-        remaining = get_position_qty()
-        if remaining <= 0.0001:
-            return 0.0
+        strict = _position_qty_strict()
+        if strict is not None:
+            remaining = strict
+            if remaining <= 0.0001:
+                return 0.0
         time.sleep(poll_s)
     return remaining
 
@@ -734,9 +740,23 @@ def submit_entry_buy(label):
 
 
 def place_market_sell(qty):
-    return trading_client.submit_order(MarketOrderRequest(
-        symbol=SYMBOL, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC,
-    ))
+    """P0-4: every market sell carries a client order id. If the submit call
+    fails, the broker is asked by that id: an accepted order is adopted (its
+    response was lost); otherwise the original error is re-raised so callers
+    keep the position tracked exactly as before."""
+    import uuid
+    cid = f"p04s-{uuid.uuid4().hex[:24]}"
+    try:
+        return trading_client.submit_order(MarketOrderRequest(
+            symbol=SYMBOL, qty=qty, side=OrderSide.SELL, time_in_force=TimeInForce.GTC, client_order_id=cid,
+        ))
+    except Exception as e:
+        try:
+            order = trading_client.get_order_by_client_id(cid)
+        except Exception:
+            raise e
+        log(f"  Sell submit raised ({e}) but the broker has it: id {order.id}, client id {cid}.")
+        return order
 
 
 def flatten_position(qty, stop_order_id, reason):
