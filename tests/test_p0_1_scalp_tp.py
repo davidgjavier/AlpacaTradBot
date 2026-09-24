@@ -649,7 +649,7 @@ class H_PositionReadFailure(Base):
 
     def _buy_ready(self, ns):
         calls = []
-        ns["place_buy"] = lambda: calls.append(1) or H.NS(id="buy1")
+        ns["place_buy"] = lambda *a, **k: calls.append(1) or H.NS(id="buy1")  # P0-4: place_buy now takes a client order id
         ns["strategies"].get_signal = lambda *a, **k: "buy"
         ns["strategies"].is_volume_confirmed = lambda *a, **k: True
         return calls

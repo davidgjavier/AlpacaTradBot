@@ -685,11 +685,52 @@ def get_actual_fill_price(order_id, fallback_price):
     return fallback_price
 
 
-def place_buy():
+def place_buy(client_order_id=None):
     return trading_client.submit_order(MarketOrderRequest(
         symbol=SYMBOL, notional=strategies.MAX_POSITION_USD,
-        side=OrderSide.BUY, time_in_force=TimeInForce.GTC,
+        side=OrderSide.BUY, time_in_force=TimeInForce.GTC, client_order_id=client_order_id,
     ))
+
+
+def _open_buy_orders_strict():
+    """OPEN buy orders for SYMBOL, or None if the broker's answer is unknown."""
+    try:
+        orders = trading_client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[SYMBOL]))
+        return [o for o in orders if (o.side.value if hasattr(o.side, "value") else str(o.side)) == "buy"]
+    except Exception:
+        return None
+
+
+def submit_entry_buy(label):
+    """P0-4: one entry per unresolved intent. Returns (order, outcome):
+    outcome is "submitted", "pending" (an open buy already exists), "unknown"
+    (open orders unreadable), "not_placed" (broker confirms no such order) or
+    "uncertain" (submit failed and the client-id lookup could not confirm
+    either way). Only "submitted" returns an order; callers must not retry an
+    entry on "uncertain" — the next cycle's open-buy/position checks decide."""
+    pending = _open_buy_orders_strict()
+    if pending is None:
+        log(f"{label} Skipping buy — open orders could not be read, so a pending entry can't be ruled out.")
+        return None, "unknown"
+    if pending:
+        log(f"{label} Skipping buy — {len(pending)} entry order(s) still open (id {pending[0].id}); not adding exposure.")
+        return None, "pending"
+    import uuid
+    cid = f"p04e-{uuid.uuid4().hex[:24]}"
+    try:
+        return place_buy(cid), "submitted"
+    except Exception as e:
+        try:
+            order = trading_client.get_order_by_client_id(cid)
+        except Exception as lookup_error:
+            if _is_not_found(lookup_error):
+                log(f"{label} Order failed (broker confirms nothing placed for client id {cid}): {e}")
+                return None, "not_placed"
+            log(f"{label} Buy outcome UNCERTAIN ({e}); client id {cid} lookup also failed ({lookup_error}). "
+                "NOT retrying — next cycle's open-order and position checks decide.")
+            return None, "uncertain"
+        log(f"{label} Buy submit raised ({e}) but the broker has it: id {order.id}, client id {cid}.")
+        return order, "submitted"
 
 
 def place_market_sell(qty):
@@ -1521,7 +1562,9 @@ def main():
                     pass  # is_spread_ok() already logs the reason
                 else:
                     try:
-                        order = place_buy()
+                        order, outcome = submit_entry_buy("  [P0-4]")
+                        if order is None:
+                            raise RuntimeError(f"entry not submitted ({outcome}); already logged above")
                         log(f"  Order submitted automatically: BTC buy — id {order.id}")
                         time.sleep(2)  # let the market order fill before we size the stop
                         filled_qty = get_position_qty()
@@ -1601,7 +1644,9 @@ def main():
                             scalp_stop_price = round(entry_price_estimate * (1 - STOP_LOSS_PCT), 2)
                         scalp_tp1_price = round(entry_price_estimate * (1 + strategies.SCALP_TP_PCT / 100), 2)
                         try:
-                            order = place_buy()
+                            order, outcome = submit_entry_buy("[STRATEGY: SCALP] [P0-4]")
+                            if order is None:
+                                raise RuntimeError(f"entry not submitted ({outcome}); already logged above")
                             log(f"[STRATEGY: SCALP] Order submitted: BTC buy — id {order.id}")
                             time.sleep(2)  # let the market order fill before we size the stop/TP
                             filled_qty = get_position_qty()
